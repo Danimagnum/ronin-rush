@@ -1,0 +1,31 @@
+{
+  "name": "@ronin/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ronin Rush API: round loop leader, wallet ledger, real-time gateway.",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "nest start --watch",
+    "start": "node --enable-source-maps dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.10",
+    "@nestjs/core": "^11.0.10",
+    "@nestjs/platform-express": "^11.0.10",
+    "@ronin/shared": "workspace:*",
+    "ioredis": "^5.4.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.2",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.0",
+    "typescript": "~5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
