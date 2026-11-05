@@ -1,0 +1,13 @@
+{
+  "name": "ronin-rush",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Live shared-round crash game with provable fairness, server-authoritative timing and a double-entry ledger. Play money only.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": { "node": ">=20.11" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
