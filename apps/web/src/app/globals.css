@@ -1,0 +1,110 @@
+@import 'tailwindcss';
+@import '@fontsource/shippori-mincho-b1/latin-600.css';
+@import '@fontsource/shippori-mincho-b1/latin-800.css';
+@import '@fontsource/zen-kaku-gothic-new/latin-400.css';
+@import '@fontsource/zen-kaku-gothic-new/latin-500.css';
+@import '@fontsource/zen-kaku-gothic-new/latin-700.css';
+
+/*
+  Ronin Rush palette — a moonlit bamboo clearing, not a neon casino.
+  ai     indigo night (aizome dye)        base
+  yoru   deeper sky over the dojo         scene
+  washi  paper under moonlight            text
+  kin    gold leaf                        multiplier, cash-out, wins
+  take   bamboo                           a bet that is still in play
+  beni   crimson lacquer                  defeat, busted
+*/
+@theme {
+  --color-ai-950: #0d1322;
+  --color-ai-900: #131a2c;
+  --color-ai-800: #1a2338;
+  --color-ai-700: #243049;
+  --color-ai-600: #334162;
+  --color-mist: #8b94aa;
+  --color-washi: #e8e2d2;
+  --color-kin: #d6af5c;
+  --color-kin-deep: #a9843a;
+  --color-take: #7ea37c;
+  --color-beni: #b4394a;
+  --color-plum: #b48ac9;
+
+  --font-display: 'Shippori Mincho B1', 'Hiragino Mincho ProN', Georgia, serif;
+  --font-sans: 'Zen Kaku Gothic New', system-ui, sans-serif;
+
+  --radius-chip: 999px;
+  --radius-panel: 14px;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-ai-900);
+  color: var(--color-washi);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Figures that change while you watch them must not jiggle. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-kin);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+  The one bold element: the multiplier, set in a woodblock-style mincho and gilded once the
+  duel heats up. Everything else on the page stays quiet so this can carry the drama.
+*/
+.stage-multiplier {
+  color: var(--color-washi);
+  text-shadow: 0 2px 24px rgb(13 19 34 / 0.85);
+  letter-spacing: -0.01em;
+}
+.stage-multiplier[data-state='betting'] {
+  color: var(--color-washi);
+  opacity: 0.92;
+}
+.stage-multiplier[data-state='enraged'],
+.stage-multiplier[data-state='frenzy'] {
+  background: linear-gradient(180deg, #f6dd9b 0%, var(--color-kin) 48%, var(--color-kin-deep) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 2px 18px rgb(13 19 34 / 0.9));
+}
+.stage-multiplier[data-state='frenzy'] {
+  filter: drop-shadow(0 0 22px rgb(214 175 92 / 0.55)) drop-shadow(0 2px 18px rgb(13 19 34 / 0.9));
+}
+.stage-multiplier[data-state='defeated'] {
+  color: var(--color-beni);
+  text-shadow: 0 2px 24px rgb(13 19 34 / 0.9);
+}
+
+.x-sign {
+  font-size: 0.7em;
+  font-weight: 400;
+  margin-left: 0.08em;
+  opacity: 0.85;
+}
+.stage-multiplier .x-sign {
+  font-size: 0.5em;
+  margin-left: 0.04em;
+  margin-right: 0.04em;
+  vertical-align: 0.12em;
+}

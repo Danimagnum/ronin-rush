@@ -11,6 +11,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm --filter @ronin/shared build && pnpm -r typecheck",
-    "dev:api": "pnpm --filter @ronin/shared build && pnpm --filter @ronin/api dev"
+    "dev:api": "pnpm --filter @ronin/shared build && pnpm --filter @ronin/api dev",
+    "dev:web": "pnpm --filter @ronin/shared build && pnpm --filter @ronin/web dev"
   }
 }
