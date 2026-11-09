@@ -8,7 +8,9 @@ import { CLOCK, DATA_SOURCE, ENV, REDIS } from '../config/tokens';
 import { currentFence } from '../db/fence';
 import { LeaderElector } from '../leader/leader-elector';
 import { PostgresLedger } from '../wallet/postgres-ledger';
-import { ImmediateDrainBarrier } from './in-memory';
+import { CommandBus } from '../realtime/command-bus';
+import { RedisDrainBarrier } from '../realtime/redis-drain-barrier';
+import { EventHub } from './event-hub';
 import { PostgresRoundStore } from './postgres-round-store';
 import { PostgresSeedSource, ensureActiveChain, type ActiveChain } from './postgres-seed-source';
 import { RoundEngine } from './round-engine';
@@ -22,6 +24,7 @@ import { RoundEngine } from './round-engine';
 export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly log = new Logger('RoundRunner');
   readonly elector: LeaderElector;
+  readonly bus: CommandBus;
   engine!: RoundEngine;
   chain!: ActiveChain;
   private shuttingDown = false;
@@ -32,6 +35,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
     @Inject(CLOCK) private readonly clock: ReferenceAlignedClock,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     private readonly ledger: PostgresLedger,
+    private readonly hub: EventHub,
   ) {
     this.elector = new LeaderElector(redis, {
       instanceId: env.INSTANCE_ID,
@@ -39,6 +43,16 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
       renewEveryMs: env.LEADER_RENEW_MS,
       minToken: () => currentFence(this.ds),
     });
+    this.bus = new CommandBus(redis, {
+      instanceId: env.INSTANCE_ID,
+      clock,
+      isLeader: () => this.elector.isLeader && this.engine?.isRunning === true,
+      handler: (cmd) => (cmd.kind === 'bet' ? this.engine.placeBet(cmd.input) : this.engine.cashOut(cmd.input)),
+    });
+  }
+
+  get isLeader(): boolean {
+    return this.elector.isLeader && this.engine?.isRunning === true;
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -57,8 +71,15 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
       seeds: new PostgresSeedSource(this.ds, this.chain),
       ledger: this.ledger,
       store: new PostgresRoundStore(this.ds, this.chain.chainId),
-      drain: new ImmediateDrainBarrier(),
-      events: { emit: (e) => this.logEvent(e) },
+      drain: new RedisDrainBarrier(this.bus, (lagging) =>
+        this.log.warn(`drain timeout: settling without waiting for ${lagging.join(', ')}`),
+      ),
+      events: {
+        emit: (e) => {
+          this.logEvent(e);
+          this.hub.publish(e);
+        },
+      },
       config: {
         bettingMs: env.BETTING_MS,
         resultMs: env.RESULT_MS,
@@ -77,11 +98,14 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
       if (leader) {
         this.log.log(`became leader (fencing token ${token}); starting round loop`);
         this.engine.start(token!);
+        void this.bus.startConsuming();
       } else {
         if (!this.shuttingDown) this.log.warn('lost leadership; stopping round loop');
         this.engine.stop();
+        void this.bus.stopConsuming();
       }
     });
+    await this.bus.start();
     await this.elector.start();
     if (!this.elector.isLeader) this.log.log('another instance is leader; running as relay');
   }
@@ -92,6 +116,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
     await this.engine?.idle();
     this.log.log('shutting down: releasing leadership');
     await this.elector.stop();
+    await this.bus.stop();
   }
 
   private logEvent(e: RoundEvent): void {

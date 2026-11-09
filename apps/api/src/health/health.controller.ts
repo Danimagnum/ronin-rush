@@ -18,7 +18,7 @@ export class HealthController {
     return {
       status: redis === 'up' ? 'ok' : 'degraded',
       instanceId: this.env.INSTANCE_ID,
-      leader: this.runner.elector.isLeader,
+      leader: this.runner.isLeader,
       fencingToken: this.runner.elector.fencingToken,
       redis,
       engine: this.runner.engine?.metrics() ?? null,
