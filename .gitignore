@@ -12,3 +12,6 @@ test-results/
 .DS_Store
 .sync/
 *.tsbuildinfo
+
+# Asset packs downloaded into the project root (sprites are copied into apps/web/public/assets)
+/*.zip
