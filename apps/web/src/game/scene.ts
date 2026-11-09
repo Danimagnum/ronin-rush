@@ -1,5 +1,5 @@
 import { Application, Container, Graphics, Sprite, Texture, type Ticker } from 'pixi.js';
-import { createOni, createRonin, type FighterRig } from './fighters';
+import { BODY_PX, HIT_FRAME, SpriteFighter, loadFighterSheets, type FighterSheets } from './sprite-fighters';
 
 /**
  * The duel. Purely a view: it never decides anything, it just renders what the round state
@@ -28,6 +28,11 @@ export interface SceneHooks {
 export interface SceneOptions {
   reducedMotion: boolean;
   lowPower: boolean;
+  /**
+   * Render the whole stage at the sprites' native pixel size and upscale it with nearest-neighbour,
+   * so the backdrop, sparks and fighters share one pixel grid.
+   */
+  pixelArt: boolean;
 }
 
 type Quality = 'high' | 'low';
@@ -69,8 +74,14 @@ export class FightScene {
   private readonly bambooNear = new Container();
   private readonly flash = new Graphics();
   private readonly vignette = new Graphics();
-  private readonly ronin: FighterRig = createRonin();
-  private readonly oni: FighterRig = createOni();
+  private readonly ronin: SpriteFighter;
+  private readonly oni: SpriteFighter;
+  /** Integer zoom applied to the sprite pixels (and, in pixel-art mode, to the whole stage). */
+  private px = 3;
+  private readonly shadows = new Graphics();
+  private rimRonin!: Sprite;
+  private rimOni!: Sprite;
+  private attackClip: 'attack1' | 'attack2' = 'attack1';
   private aura!: Sprite;
   private dot!: Texture;
   private glow!: Texture;
@@ -100,24 +111,36 @@ export class FightScene {
     private readonly frame: () => SceneFrame,
     private readonly hooks: SceneHooks,
     private readonly opts: SceneOptions,
+    sheets: { ronin: FighterSheets; oni: FighterSheets },
   ) {
     this.quality = opts.lowPower ? 'low' : 'high';
+    this.ronin = new SpriteFighter(sheets.ronin, 1);
+    this.oni = new SpriteFighter(sheets.oni, -1); // same rig, mirrored to face left
+  }
+
+  /** Sprite zoom for a stage height: bodies ~30% of the stage, always a whole number for crisp pixels. */
+  static pixelZoom(stageHeight: number): number {
+    return Math.max(2, Math.round((stageHeight * 0.26) / BODY_PX));
   }
 
   static async create(el: HTMLElement, frame: () => SceneFrame, hooks: SceneHooks, opts: SceneOptions): Promise<FightScene> {
+    const [ronin, oni] = await Promise.all([loadFighterSheets('/assets/fighters/ronin'), loadFighterSheets('/assets/fighters/oni')]);
     const app = new Application();
     await app.init({
       resizeTo: el,
       backgroundAlpha: 0,
-      antialias: !opts.lowPower,
-      resolution: Math.min(window.devicePixelRatio || 1, opts.lowPower ? 1.25 : 2),
+      antialias: !opts.pixelArt && !opts.lowPower,
+      // Pixel-art mode renders at 1 canvas pixel per sprite pixel; the browser upscales it.
+      resolution: opts.pixelArt ? 1 / FightScene.pixelZoom(el.clientHeight || 400) : Math.min(window.devicePixelRatio || 1, opts.lowPower ? 1.25 : 2),
       autoDensity: true,
+      roundPixels: true,
       preference: 'webgl',
       powerPreference: opts.lowPower ? 'low-power' : 'high-performance',
     });
     app.canvas.setAttribute('aria-hidden', 'true');
+    if (opts.pixelArt) app.canvas.style.imageRendering = 'pixelated';
     el.appendChild(app.canvas);
-    const scene = new FightScene(app, frame, hooks, opts);
+    const scene = new FightScene(app, frame, hooks, opts, { ronin, oni });
     scene.build();
     return scene;
   }
@@ -134,7 +157,18 @@ export class FightScene {
     for (let i = 10; i > 0; i--) glowG.circle(0, 0, i * 12).fill({ color: 0xffffff, alpha: 0.05 });
     this.glow = this.app.renderer.generateTexture(glowG);
 
-    this.world.addChild(this.backdrop, this.bambooFar, this.bambooMid, this.ground, this.mist, this.oni.root, this.ronin.root, this.fx, this.bambooNear);
+    // Soft moonlight behind each fighter lifts the dark sprites off the night backdrop.
+    const rim = (tint: number) => {
+      const r = new Sprite(this.glow);
+      r.anchor.set(0.5);
+      r.tint = tint;
+      r.alpha = 0.16;
+      r.blendMode = 'add';
+      return r;
+    };
+    this.rimRonin = rim(0xe8e2d2);
+    this.rimOni = rim(0xff9a8a);
+    this.world.addChild(this.backdrop, this.bambooFar, this.bambooMid, this.ground, this.mist, this.shadows, this.rimOni, this.rimRonin, this.oni.root, this.ronin.root, this.fx, this.bambooNear);
     this.app.stage.addChild(this.world, this.vignette, this.flash);
 
     this.aura = new Sprite(this.glow);
@@ -193,11 +227,18 @@ export class FightScene {
       this.vignette.rect(inset, inset, w - inset * 2, h - inset * 2).stroke({ width: edge / 8, color: 0x05070d, alpha: 0.09 });
     }
 
-    const scale = h * 0.36;
-    this.ronin.root.scale.set(scale);
-    this.oni.root.scale.set(-scale * 1.08, scale * 1.08); // mirrored: faces left
+    this.px = FightScene.pixelZoom(h);
+    if (this.opts.pixelArt && Math.abs(this.app.renderer.resolution - 1 / this.px) > 1e-6) {
+      this.app.renderer.resolution = 1 / this.px;
+    }
+    this.ronin.setScale(this.px);
+    this.oni.setScale(this.px);
     this.ronin.root.y = groundY;
     this.oni.root.y = groundY;
+    for (const r of [this.rimRonin, this.rimOni]) {
+      r.scale.set((BODY_PX * this.px) / 150);
+      r.y = groundY - BODY_PX * this.px * 0.45;
+    }
 
     this.spawnFireflies();
   }
@@ -288,53 +329,59 @@ export class FightScene {
 
     const groundY = this.h * 0.8;
     const center = this.w / 2;
-    const restGap = Math.min(this.w * 0.17, this.h * 0.32);
+    // Spacing in sprite pixels: half the distance between the two fighters' centres.
+    const restGap = Math.min(this.w * 0.24, 58 * this.px);
 
     // New round after a defeat: cut to both fighters back in guard, fading in, instead of
     // sliding the fallen ronin and the oni through each other.
     if (f.phase === 'BETTING' && this.lastPhase !== 'BETTING') {
       this.ronin.root.position.x = center - restGap * 1.25;
       this.oni.root.position.x = center + restGap * 1.25;
-      this.ronin.root.rotation = 0;
-      this.ronin.arm.rotation = -0.35;
-      this.oni.arm.rotation = -0.5;
-      this.ronin.body.rotation = 0;
-      this.oni.body.rotation = 0;
+      this.ronin.play('idle', { loop: true, durationMs: 900, restart: true });
+      this.oni.play('idle', { loop: true, durationMs: 900, restart: true });
+      this.exchangeT = 0;
       this.fadeIn = this.lastPhase === 'IDLE' ? 1 : 0;
     }
     this.lastPhase = f.phase;
     this.fadeIn = Math.min(1, this.fadeIn + realDt / 450);
-    const breathe = Math.sin(this.time * 2.2) * 0.012;
 
     if (defeated) {
       this.playDefeat(f, realDt, center, groundY);
     } else {
       this.crashT = 0;
-      this.ronin.root.rotation = approach(this.ronin.root.rotation, 0, 0.2, realDt);
       this.ronin.root.alpha = approach(this.ronin.root.alpha, 1, 0.1, realDt);
-      this.oni.setRage(fighting ? rage : 0);
-
+      // Rage reddens the oni's sprite.
+      this.oni.sprite.tint = fighting ? mixColor(0xffffff, 0xff7a7a, rage) : 0xffffff;
       if (fighting) {
         this.animateExchange(dt, center, restGap, rage, frenzy, tier);
       } else {
-        // Betting: ready stances, a wary half-step back and forth.
+        // Betting: idle stances, a wary half-step back and forth.
         const drift = Math.sin(this.time * 0.8) * this.w * 0.006;
         this.ronin.root.x = approach(this.ronin.root.x, center - restGap * 1.25 + drift, 0.08, realDt);
         this.oni.root.x = approach(this.oni.root.x, center + restGap * 1.25 - drift, 0.08, realDt);
-        this.ronin.arm.rotation = approach(this.ronin.arm.rotation, -0.35, 0.1, realDt);
-        this.oni.arm.rotation = approach(this.oni.arm.rotation, -0.5, 0.1, realDt);
-        this.ronin.body.rotation = approach(this.ronin.body.rotation, 0, 0.1, realDt);
-        this.oni.body.rotation = approach(this.oni.body.rotation, 0, 0.1, realDt);
+        if (this.ronin.current !== 'idle') this.ronin.play('idle', { loop: true, durationMs: 900 });
+        if (this.oni.current !== 'idle') this.oni.play('idle', { loop: true, durationMs: 900 });
       }
-      this.ronin.body.scale.y = 1 + breathe;
-      this.oni.body.scale.y = 1 - breathe;
     }
+    this.ronin.update(dt);
+    this.oni.update(dt);
+    this.rimRonin.x = this.ronin.root.x;
+    this.rimOni.x = this.oni.root.x;
+    this.rimOni.alpha = 0.14 + (fighting ? rage * 0.18 : 0);
+    // Contact shadows ground the sprites.
+    const sw = BODY_PX * this.px * 0.55;
+    this.shadows
+      .clear()
+      .ellipse(this.ronin.root.x, groundY + 2, sw, sw * 0.12)
+      .fill({ color: 0x000000, alpha: 0.35 * this.ronin.root.alpha })
+      .ellipse(this.oni.root.x, groundY + 2, sw, sw * 0.12)
+      .fill({ color: 0x000000, alpha: 0.35 * this.oni.root.alpha });
 
     // Aura in frenzy.
     const auraTarget = fighting && frenzy ? 0.55 + Math.sin(this.time * 6) * 0.15 : 0;
     this.aura.alpha = approach(this.aura.alpha, auraTarget, 0.08, realDt);
-    this.aura.position.set(this.ronin.root.x, groundY - this.h * 0.2);
-    this.aura.scale.set((this.h / 260) * (1 + Math.sin(this.time * 3) * 0.04));
+    this.aura.position.set(this.ronin.root.x, groundY - BODY_PX * this.px * 0.5);
+    this.aura.scale.set(((BODY_PX * this.px) / 110) * (1 + Math.sin(this.time * 3) * 0.04));
 
     this.updateSparks(realDt);
 
@@ -355,72 +402,79 @@ export class FightScene {
     this.lastDt = realDt;
   }
 
+  /**
+   * One exchange: both fighters close in and swing; the blades meet on the attack's hit frame.
+   * Duration shrinks with rage, so the duel visibly speeds up as the multiplier climbs.
+   */
   private animateExchange(dt: number, center: number, restGap: number, rage: number, frenzy: boolean, tier: number): void {
-    const duration = frenzy ? 560 : lerp(1150, 720, rage);
-    this.exchangeT += dt / duration;
-    if (this.exchangeT >= 1) {
-      this.exchangeT -= 1;
+    const duration = frenzy ? 620 : lerp(1250, 780, rage);
+    const startNew = this.exchangeT === 0 || this.exchangeT >= 1;
+    if (startNew) {
+      this.exchangeT = this.exchangeT >= 1 ? this.exchangeT - 1 : 0;
       this.attacker = this.attacker === 0 ? 1 : 0;
+      this.attackClip = this.attackClip === 'attack1' ? 'attack2' : 'attack1';
       this.clashedThisExchange = false;
     }
-    const t = this.exchangeT;
-    // wind-up (0-.45), strike (.45-.6), recoil (.6-1)
-    const windup = clamp01(t / 0.45);
-    const strike = clamp01((t - 0.45) / 0.15);
-    const recoil = clamp01((t - 0.6) / 0.4);
-    const lunge = strike < 1 ? easeOut(strike) : 1 - easeInOut(recoil);
-    const raise = t < 0.45 ? easeInOut(windup) : 1 - easeOut(strike);
+    this.exchangeT += dt / duration;
+    const t = Math.min(1, this.exchangeT);
+
+    // Approach (0-.35), strike (.35-.62), recoil (.62-1)
+    const approachIn = easeInOut(clamp01(t / 0.35));
+    const recoil = easeInOut(clamp01((t - 0.62) / 0.38));
+    const close = t < 0.62 ? approachIn : 1 - recoil;
 
     const atkIsRonin = this.attacker === 0;
-    const gap = restGap * (1 - 0.62 * lunge);
-    const aggression = 1 + rage * 0.6;
-    this.ronin.root.x = center - gap * (atkIsRonin ? 0.85 : 1.15);
-    this.oni.root.x = center + gap * (atkIsRonin ? 1.15 : 0.85 / aggression);
+    const gap = restGap * (1 - 0.38 * close);
+    const aggression = 1 + rage * 0.5;
+    // The attacker closes most of the distance; rage makes the oni lunge further.
+    this.ronin.root.x = center - gap * (atkIsRonin ? 0.75 : 1.1);
+    this.oni.root.x = center + gap * (atkIsRonin ? 1.1 : 0.75 / aggression);
 
-    const atk = atkIsRonin ? this.ronin : this.oni;
-    const def = atkIsRonin ? this.oni : this.ronin;
-    atk.arm.rotation = lerp(-0.3, -2.1, raise) + lunge * 0.9;
-    def.arm.rotation = lerp(-0.4, -1.0, lunge);
-    atk.body.rotation = lerp(-0.08, 0.12, lunge);
-    def.body.rotation = lerp(0, -0.08, lunge);
+    // Time the clip so its hit frame lands at t = 0.5 of the exchange. Only the attacker swings
+    // (its baked-in slash arc is the anime smear); the defender holds guard and is pushed back.
+    const attacker = atkIsRonin ? this.ronin : this.oni;
+    const strikeWindow = duration * 0.45;
+    const hitAt = (HIT_FRAME[this.attackClip] + 0.5) / 6; // fraction of the clip
+    const clipStart = 0.5 - hitAt * 0.45;
+    if (t >= clipStart && attacker.current === 'idle') attacker.play(this.attackClip, { durationMs: strikeWindow, restart: true });
+    const knock = t > 0.5 ? Math.sin(clamp01((t - 0.5) / 0.25) * Math.PI) * 6 * this.px * (0.6 + rage) : 0;
+    if (atkIsRonin) this.oni.root.x += knock;
+    else this.ronin.root.x -= knock;
 
-    if (!this.clashedThisExchange && t >= 0.56) {
+    if (!this.clashedThisExchange && t >= 0.5) {
       this.clashedThisExchange = true;
       const contactX = (this.ronin.root.x + this.oni.root.x) / 2;
-      const contactY = this.h * 0.8 - this.h * 0.36 * 0.72;
+      const contactY = this.h * 0.8 - 30 * this.px; // blade height in sprite pixels above the feet
       const intensity = tier === 0 ? 0.35 : tier === 1 ? 0.6 + rage * 0.3 : 1;
       this.burst(contactX, contactY, tier === 0 ? 6 : tier === 1 ? 14 : 26, intensity);
-      if (tier >= 1 && !this.opts.reducedMotion) this.shake = Math.max(this.shake, 4 + rage * 10 + (frenzy ? 6 : 0));
+      if (tier >= 1 && !this.opts.reducedMotion) this.shake = Math.max(this.shake, 3 + rage * 8 + (frenzy ? 5 : 0));
       if (frenzy && !this.opts.reducedMotion) this.slowmoUntil = performance.now() + 260;
       this.hooks.onClash?.(intensity);
     }
   }
 
+  /** The final blow: the oni dashes through with its heavy cut; the ronin is hit and falls. */
   private playDefeat(f: SceneFrame, realDt: number, center: number, groundY: number): void {
     const freshCrash = this.crashRound !== f.roundId;
     if (freshCrash) {
       this.crashRound = f.roundId;
-      // Only play the strike if we are watching it happen; late joiners see the aftermath.
-      this.crashT = f.phase === 'CRASHED' ? 0 : 1;
-      if (f.phase === 'CRASHED') {
+      const live = f.phase === 'CRASHED'; // late joiners only see the aftermath
+      this.crashT = live ? 0 : 1;
+      this.oni.sprite.tint = 0xff7a7a;
+      this.oni.play('attack2', { durationMs: 420, restart: true, hold: true });
+      this.ronin.play(live ? 'take-hit' : 'death', { durationMs: live ? 260 : 1, restart: true, hold: true });
+      if (live) {
         this.flashAlpha = this.opts.reducedMotion ? 0.35 : 0.9;
-        this.shake = this.opts.reducedMotion ? 0 : 22;
-        this.burst(this.ronin.root.x, groundY - this.h * 0.25, 40, 1);
+        this.shake = this.opts.reducedMotion ? 0 : 18;
+        this.burst(this.ronin.root.x, groundY - 30 * this.px, 40, 1);
         this.hooks.onFinalBlow?.();
       }
     }
     this.crashT = Math.min(1, this.crashT + realDt / 900);
-    const dash = easeOut(clamp01(this.crashT / 0.18));
-    const fall = easeInOut(clamp01((this.crashT - 0.15) / 0.6));
-    // The oni dashes through to the ronin's far side; the ronin crumples.
-    this.oni.root.x = approach(this.oni.root.x, center - this.w * 0.2 * dash - this.w * 0.02, 0.35, realDt);
-    this.oni.arm.rotation = approach(this.oni.arm.rotation, 0.9, 0.3, realDt);
-    this.oni.body.rotation = approach(this.oni.body.rotation, 0.15, 0.2, realDt);
-    this.oni.setRage(1);
-    this.ronin.root.x = approach(this.ronin.root.x, center + this.w * 0.02, 0.1, realDt);
-    this.ronin.root.rotation = lerp(0, 1.35, fall);
-    this.ronin.root.alpha = lerp(1, 0.75, fall);
-    this.ronin.arm.rotation = approach(this.ronin.arm.rotation, 0.6, 0.1, realDt);
+    if (this.crashT > 0.28 && this.ronin.current === 'take-hit') this.ronin.play('death', { durationMs: 700, restart: true, hold: true });
+    const dash = easeOut(clamp01(this.crashT / 0.2));
+    this.oni.root.x = approach(this.oni.root.x, center - this.w * 0.16 * dash, 0.35, realDt);
+    this.ronin.root.x = approach(this.ronin.root.x, center + this.w * 0.03, 0.12, realDt);
   }
 
   // ── particles ────────────────────────────────────────────────────────────
