@@ -14,7 +14,17 @@ import {
   type RoundSnapshot,
 } from '@ronin/shared';
 import type { Clock } from '../clock/clock';
-import type { BetLedger, DrainBarrier, RoundEventSink, SeedSource } from './ports';
+import {
+  FencedOutError,
+  type BetLedger,
+  type DrainBarrier,
+  type PersistedBet,
+  type PersistedRound,
+  type RoundEventSink,
+  type RoundStore,
+  type SeedSource,
+  type SettledRound,
+} from './ports';
 import { SerialQueue } from './serial-queue';
 
 export interface RoundEngineConfig {
@@ -32,10 +42,14 @@ export interface RoundEngineDeps {
   clock: Clock;
   seeds: SeedSource;
   ledger: BetLedger;
+  store: RoundStore;
   drain: DrainBarrier;
   events: RoundEventSink;
   config: RoundEngineConfig;
   onError?: (err: unknown) => void;
+  /** Called when a write was rejected because a newer leader exists; the engine has already stopped. */
+  onFenced?: () => void;
+  onResume?: (info: { roundId: number; phase: RoundPhase }) => void;
 }
 
 export interface PlaceBetInput {
@@ -56,20 +70,9 @@ export interface CashoutInput {
   receivedAt: number;
 }
 
-export type BetResult = { ok: true; bet: PublicBet } | { ok: false; error: CommandError };
+export type BetResult = { ok: true; bet: PublicBet; balance?: number | null } | { ok: false; error: CommandError };
 
-export interface SettledRound {
-  roundId: number;
-  crashX100: number;
-  seed: string;
-  seedHash: string;
-  settledAt: number;
-}
-
-interface BetState extends PublicBet {
-  placedAt: number;
-  cashedAt: number | null;
-}
+type BetState = PersistedBet;
 
 interface RoundState {
   id: number;
@@ -84,7 +87,7 @@ interface RoundState {
   crashedAt: number | null;
   settledAt: number | null;
   bets: Map<string, BetState>; // by userId
-  betKeys: Map<string, string>; // idempotencyKey -> userId
+  betKeys: Map<string, string>; // client idempotencyKey -> userId
 }
 
 const HISTORY_SIZE = 50;
@@ -99,26 +102,31 @@ const LATENCY_WINDOW = 200;
  * crashedAt = crashAt). Timers only trigger the transitions; how late a timer fires is
  * measured as "round loop latency" but never changes who wins: every decision compares a
  * command's receive timestamp with those nominal instants.
+ *
+ * Every transition is persisted (with its outbox events) before it is broadcast, so a new
+ * leader resumes the very same round — same id, crash point and bets — after a failover.
  */
 export class RoundEngine {
   private readonly queue = new SerialQueue();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly latencies: number[] = [];
-  private readonly history: SettledRound[] = [];
+  private history: SettledRound[] = [];
   private round: RoundState | null = null;
   private running = false;
+  private token = 0;
 
   constructor(private readonly deps: RoundEngineDeps) {}
 
   // ── lifecycle ────────────────────────────────────────────────────────────
 
-  start(): void {
+  /** Starts (or resumes) the loop as leader holding `fencingToken`. */
+  start(fencingToken: number): void {
     if (this.running) return;
     this.running = true;
-    void this.queue.run(() => this.openBetting()).catch((e) => this.fail(e));
+    this.token = fencingToken;
+    void this.queue.run(() => this.resume()).catch((e) => this.fail(e));
   }
 
-  /** Stops scheduling. A new leader resumes from persisted state (see RoundStore, wallet milestone). */
   stop(): void {
     this.running = false;
     for (const t of this.timers.values()) clearTimeout(t);
@@ -129,14 +137,19 @@ export class RoundEngine {
     return this.running;
   }
 
+  /** Resolves once every queued command/transition has been processed (tests, graceful shutdown). */
+  idle(): Promise<void> {
+    return this.queue.run(() => undefined);
+  }
+
   // ── commands ─────────────────────────────────────────────────────────────
 
   placeBet(input: PlaceBetInput): Promise<BetResult> {
-    return this.queue.run(() => this.handlePlaceBet(input));
+    return this.queue.run(() => this.guard(() => this.handlePlaceBet(input)));
   }
 
   cashOut(input: CashoutInput): Promise<BetResult> {
-    return this.queue.run(() => this.handleCashout(input));
+    return this.queue.run(() => this.guard(() => this.handleCashout(input)));
   }
 
   // ── read model ───────────────────────────────────────────────────────────
@@ -174,16 +187,75 @@ export class RoundEngine {
         max: sorted.at(-1) ?? 0,
       },
       queueDepth: this.queue.size,
-      roundsSettled: this.history.length,
+      roundsInHistory: this.history.length,
+    };
+  }
+
+  // ── recovery ─────────────────────────────────────────────────────────────
+
+  private async resume(): Promise<void> {
+    const { store, clock, config } = this.deps;
+    this.history = await store.recent(HISTORY_SIZE);
+    const last = await store.latest();
+    if (!last) return this.openBetting(1);
+
+    this.round = await this.hydrate(last);
+    const r = this.round;
+    // Claim the fence before anything else: from this write on, the previous leader's writes fail.
+    await this.persist([]);
+    this.deps.onResume?.({ roundId: r.id, phase: r.phase });
+
+    switch (r.phase) {
+      case 'SETTLED':
+        this.schedule('next', Math.max(r.crashedAt! + config.resultMs, clock.now()), () => this.openBetting(r.id + 1));
+        return;
+      case 'BETTING':
+        // Re-announce so clients resync, then continue the countdown (or start right away).
+        this.emit({ type: 'round.betting', roundId: r.id, seedHash: r.seedHash, bettingEndsAt: r.bettingEndsAt, serverTime: clock.now() });
+        this.schedule('start', r.bettingEndsAt, () => this.startRunning());
+        return;
+      case 'RUNNING':
+        this.emit({ type: 'round.started', roundId: r.id, startedAt: r.startedAt!, k: config.k });
+        if (r.crashAt! <= clock.now()) return this.crash();
+        this.scheduleNextAuto();
+        this.schedule('crash', r.crashAt!, () => this.crash());
+        return;
+      case 'CRASHED':
+        this.emit({ type: 'round.crashed', roundId: r.id, crashX100: r.crashX100, crashedAt: r.crashedAt! });
+        this.settleAfterDrain(r);
+        return;
+    }
+  }
+
+  private async hydrate(p: PersistedRound): Promise<RoundState> {
+    const seed = await this.deps.seeds.seedFor(p.id);
+    // The stored crash point must be the one the seed dictates: refuse to run on tampered state.
+    if (sha256Hex(seed) !== p.seedHash || crashPointX100(seed, this.deps.config.publicSalt) !== p.crashX100) {
+      throw new Error(`round ${p.id}: persisted state does not match the hash chain`);
+    }
+    const bets = await this.deps.store.bets(p.id);
+    return {
+      id: p.id,
+      seed,
+      seedHash: p.seedHash,
+      crashX100: p.crashX100,
+      phase: p.phase,
+      bettingEndsAt: p.bettingEndsAt,
+      startedAt: p.startedAt,
+      crashAt: p.crashAt,
+      crashedAt: p.crashedAt,
+      settledAt: p.settledAt,
+      bets: new Map(bets.map((b) => [b.userId, b])),
+      betKeys: new Map(bets.map((b) => [b.clientKey, b.userId])),
     };
   }
 
   // ── transitions ──────────────────────────────────────────────────────────
 
-  private async openBetting(): Promise<void> {
+  private async openBetting(roundId: number): Promise<void> {
     if (!this.running) return;
     const { config, clock, seeds } = this.deps;
-    const { roundId, seed } = await seeds.next();
+    const seed = await seeds.seedFor(roundId);
     const now = clock.now();
     this.round = {
       id: roundId,
@@ -199,13 +271,9 @@ export class RoundEngine {
       bets: new Map(),
       betKeys: new Map(),
     };
-    this.emit({
-      type: 'round.betting',
-      roundId,
-      seedHash: this.round.seedHash,
-      bettingEndsAt: this.round.bettingEndsAt,
-      serverTime: now,
-    });
+    await this.persist([
+      { type: 'round.betting', roundId, seedHash: this.round.seedHash, bettingEndsAt: this.round.bettingEndsAt, serverTime: now },
+    ]);
     this.schedule('start', this.round.bettingEndsAt, () => this.startRunning());
   }
 
@@ -215,11 +283,8 @@ export class RoundEngine {
     r.phase = 'RUNNING';
     r.startedAt = r.bettingEndsAt;
     r.crashAt = r.startedAt + elapsedMsForX100(r.crashX100, k);
-    this.emit({ type: 'round.started', roundId: r.id, startedAt: r.startedAt, k });
-    if (r.crashX100 === 100) {
-      await this.crash(); // instant bust: no timer needed
-      return;
-    }
+    await this.persist([{ type: 'round.started', roundId: r.id, startedAt: r.startedAt, k }]);
+    if (r.crashAt <= this.deps.clock.now()) return this.crash(); // 1.00x, or resumed after the crash instant
     this.scheduleNextAuto();
     this.schedule('crash', r.crashAt, () => this.crash());
   }
@@ -254,54 +319,58 @@ export class RoundEngine {
 
   private async crash(): Promise<void> {
     const r = this.round!;
+    if (r.phase !== 'RUNNING') return;
     this.clearTimer('auto');
-    // A late auto timer must not cost the player: any auto target below the crash point was
-    // reached before the crash instant, so it is paid even if its timer had not fired yet.
+    this.clearTimer('crash');
+    // A late auto timer must not cost the player: any target below the crash point was reached
+    // before the crash instant, so it is paid even if its timer had not fired yet.
     for (const bet of this.pendingAutos()) {
       await this.settleCashout(bet, bet.autoX100!, true, r.startedAt! + elapsedMsForX100(bet.autoX100!, this.deps.config.k));
     }
     r.phase = 'CRASHED';
     r.crashedAt = r.crashAt!;
-    this.emit({ type: 'round.crashed', roundId: r.id, crashX100: r.crashX100, crashedAt: r.crashedAt });
+    await this.persist([{ type: 'round.crashed', roundId: r.id, crashX100: r.crashX100, crashedAt: r.crashedAt }]);
+    this.settleAfterDrain(r);
+  }
 
-    // Wait outside the queue so in-flight cash-outs (received before crashAt) can still be applied.
+  /** Waits outside the queue so in-flight cash-outs received before crashAt can still be applied. */
+  private settleAfterDrain(r: RoundState): void {
     const roundId = r.id;
     void this.deps.drain
-      .waitUntilDrained(r.crashedAt, this.deps.config.drainTimeoutMs)
+      .waitUntilDrained(r.crashedAt!, this.deps.config.drainTimeoutMs)
       .catch(() => undefined)
-      .then(() => this.queue.run(() => this.settle(roundId)))
+      .then(() => this.queue.run(() => this.guard(() => this.settle(roundId))))
       .catch((e) => this.fail(e));
   }
 
   private async settle(roundId: number): Promise<void> {
     const r = this.round;
-    if (!r || r.id !== roundId || r.phase !== 'CRASHED') return;
+    if (!this.running || !r || r.id !== roundId || r.phase !== 'CRASHED') return;
     const lost = [...r.bets.values()].filter((b) => b.status === 'ACTIVE');
-    await this.deps.ledger.settleLosses(
-      r.id,
-      lost.map((b) => ({ betId: b.betId, userId: b.userId, amount: b.amount })),
-      `round-loss:${r.id}`,
-    );
+    if (lost.length) {
+      await this.deps.ledger.settleLosses(
+        r.id,
+        lost.map((b) => ({ betId: b.betId, userId: b.userId, amount: b.amount })),
+        `round-loss:${r.id}`,
+        this.token,
+      );
+    }
     for (const b of lost) {
       b.status = 'LOST';
       b.payout = 0;
     }
-    if (lost.length) this.emit({ type: 'bets.lost', roundId: r.id, betIds: lost.map((b) => b.betId) });
 
     r.phase = 'SETTLED';
     r.settledAt = this.deps.clock.now();
     const nextRoundAt = Math.max(r.crashedAt! + this.deps.config.resultMs, r.settledAt);
+    const events: RoundEvent[] = [];
+    if (lost.length) events.push({ type: 'bets.lost', roundId: r.id, betIds: lost.map((b) => b.betId) });
+    events.push({ type: 'round.settled', roundId: r.id, crashX100: r.crashX100, seed: r.seed, settledAt: r.settledAt, nextRoundAt });
+    await this.persist(events);
+
     this.history.unshift({ roundId: r.id, crashX100: r.crashX100, seed: r.seed, seedHash: r.seedHash, settledAt: r.settledAt });
     if (this.history.length > HISTORY_SIZE) this.history.pop();
-    this.emit({
-      type: 'round.settled',
-      roundId: r.id,
-      crashX100: r.crashX100,
-      seed: r.seed,
-      settledAt: r.settledAt,
-      nextRoundAt,
-    });
-    this.schedule('next', nextRoundAt, () => this.openBetting());
+    this.schedule('next', nextRoundAt, () => this.openBetting(r.id + 1));
   }
 
   // ── command handlers (run inside the serial queue) ───────────────────────
@@ -336,7 +405,11 @@ export class RoundEngine {
       userId: input.userId,
       roundId: r.id,
       amount: input.amount,
+      autoX100: auto,
+      clientKey: input.idempotencyKey,
+      placedAt: input.receivedAt,
       idempotencyKey: `bet:${r.id}:${input.userId}`,
+      fencingToken: this.token,
     });
     if (!debit.ok) return { ok: false, error: debit.reason };
 
@@ -351,13 +424,14 @@ export class RoundEngine {
       status: 'ACTIVE',
       cashoutX100: null,
       payout: null,
+      clientKey: input.idempotencyKey,
       placedAt: input.receivedAt,
       cashedAt: null,
     };
     r.bets.set(input.userId, bet);
     r.betKeys.set(input.idempotencyKey, input.userId);
     this.emit({ type: 'bet.placed', bet: toPublic(bet) });
-    return { ok: true, bet: toPublic(bet) };
+    return { ok: true, bet: toPublic(bet), balance: debit.balance };
   }
 
   private async handleCashout(input: CashoutInput): Promise<BetResult> {
@@ -396,7 +470,11 @@ export class RoundEngine {
       roundId: bet.roundId,
       stake: bet.amount,
       payout,
+      x100,
+      auto,
+      cashedAt,
       idempotencyKey: `cashout:${bet.betId}`,
+      fencingToken: this.token,
     });
     bet.status = 'CASHED_OUT';
     bet.cashoutX100 = x100;
@@ -407,6 +485,44 @@ export class RoundEngine {
 
   // ── plumbing ─────────────────────────────────────────────────────────────
 
+  /** Persist first, broadcast second: clients never see a state that a failover could undo. */
+  private async persist(events: RoundEvent[]): Promise<void> {
+    const r = this.round!;
+    await this.deps.store.save(
+      {
+        id: r.id,
+        seedHash: r.seedHash,
+        crashX100: r.crashX100,
+        phase: r.phase,
+        bettingEndsAt: r.bettingEndsAt,
+        startedAt: r.startedAt,
+        crashAt: r.crashAt,
+        crashedAt: r.crashedAt,
+        settledAt: r.settledAt,
+        seed: r.phase === 'SETTLED' ? r.seed : null,
+      },
+      this.token,
+      events,
+    );
+    for (const e of events) this.emit(e);
+  }
+
+  /** Command wrapper: a fenced-out leader answers NOT_LEADER instead of throwing at the caller. */
+  private async guard(fn: () => Promise<BetResult>): Promise<BetResult>;
+  private async guard(fn: () => Promise<void>): Promise<void>;
+  private async guard(fn: () => Promise<BetResult | void>): Promise<BetResult | void> {
+    if (!this.running) return { ok: false, error: 'NOT_LEADER' };
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof FencedOutError) {
+        this.fail(e);
+        return { ok: false, error: 'NOT_LEADER' };
+      }
+      throw e;
+    }
+  }
+
   private schedule(name: string, at: number, fn: () => Promise<void>): void {
     this.clearTimer(name);
     if (!this.running) return;
@@ -414,7 +530,7 @@ export class RoundEngine {
     const handle = setTimeout(() => {
       this.timers.delete(name);
       this.recordLatency(this.deps.clock.now() - at);
-      void this.queue.run(fn).catch((e) => this.fail(e));
+      void this.queue.run(() => (this.running ? fn() : undefined)).catch((e) => this.fail(e));
     }, delay);
     this.timers.set(name, handle);
   }
@@ -439,6 +555,11 @@ export class RoundEngine {
   }
 
   private fail(err: unknown): void {
+    if (err instanceof FencedOutError) {
+      this.stop();
+      this.deps.onFenced?.();
+      return;
+    }
     (this.deps.onError ?? ((e) => console.error('[round-engine]', e)))(err);
   }
 }

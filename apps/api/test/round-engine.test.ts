@@ -19,7 +19,7 @@ describe('state machine', () => {
   it('runs BETTING → RUNNING → CRASHED → SETTLED → BETTING with exact nominal timestamps', async () => {
     const [a, b] = seedsWhere((c) => c > 200 && c < 500, () => true);
     const { engine, events, ofType } = makeEngine({ seeds: [a!.seed, b!.seed] });
-    engine.start();
+    engine.start(1);
     await flush();
 
     const betting = ofType('round.betting')[0]!;
@@ -55,7 +55,7 @@ describe('state machine', () => {
   it('a 1.00x round crashes the instant it starts and loses every bet', async () => {
     const [s] = seedsWhere((c) => c === 100);
     const { engine, ofType, ledger } = makeEngine({ seeds: [s!.seed] });
-    engine.start();
+    engine.start(1);
     await flush();
     expect((await engine.placeBet({ userId: 'u1', username: 'u1', amount: 500, idempotencyKey: key('a'), receivedAt: Date.now() })).ok).toBe(true);
     await vi.advanceTimersByTimeAsync(8_000);
@@ -68,7 +68,7 @@ describe('state machine', () => {
 
   it('stop() halts the loop', async () => {
     const { engine, events } = makeEngine({ seeds: seedsWhere(() => true).map((s) => s.seed) });
-    engine.start();
+    engine.start(1);
     await flush();
     engine.stop();
     const n = events.length;
@@ -80,7 +80,7 @@ describe('state machine', () => {
 describe('betting window', () => {
   it('validates timing, duplicates, idempotency and funds', async () => {
     const { engine } = makeEngine({ seeds: seedsWhere(() => true).map((s) => s.seed), balance: 1_000 });
-    engine.start();
+    engine.start(1);
     await flush();
     const endsAt = engine.snapshot()!.bettingEndsAt;
 
@@ -88,7 +88,7 @@ describe('betting window', () => {
     expect(first.ok).toBe(true);
     // Retry with the same key returns the same bet, no double debit.
     const retry = await engine.placeBet({ userId: 'u1', username: 'u1', amount: 100, autoX100: 200, idempotencyKey: key('1'), receivedAt: Date.now() });
-    expect(retry).toEqual(first);
+    expect(retry.ok && first.ok && retry.bet).toEqual(first.ok && first.bet);
     expect(await engine.placeBet({ userId: 'u1', username: 'u1', amount: 100, idempotencyKey: key('2'), receivedAt: Date.now() })).toEqual({ ok: false, error: 'ALREADY_BET' });
     expect(await engine.placeBet({ userId: 'u2', username: 'u2', amount: 5_000, idempotencyKey: key('3'), receivedAt: Date.now() })).toEqual({ ok: false, error: 'INSUFFICIENT_FUNDS' });
     expect(await engine.placeBet({ userId: 'u3', username: 'u3', amount: 5, idempotencyKey: key('4'), receivedAt: Date.now() })).toEqual({ ok: false, error: 'VALIDATION_ERROR' });
@@ -104,7 +104,7 @@ describe('server-authoritative cash-out', () => {
   it('pays m(receivedAt), not the multiplier at processing time', async () => {
     const [s] = seedsWhere((c) => c > 300);
     const { engine, ledger } = makeEngine({ seeds: [s!.seed] });
-    engine.start();
+    engine.start(1);
     await flush();
     await engine.placeBet({ userId: 'u1', username: 'u1', amount: 1_000, idempotencyKey: key('b'), receivedAt: Date.now() });
     await vi.advanceTimersByTimeAsync(8_000);
@@ -125,7 +125,7 @@ describe('server-authoritative cash-out', () => {
     const [s] = seedsWhere((c) => c > 200 && c < 400);
     const drain = new ManualDrain();
     const { engine, ofType, ledger } = makeEngine({ seeds: [s!.seed], drain });
-    engine.start();
+    engine.start(1);
     await flush();
     for (const u of ['early', 'late', 'idle']) {
       await engine.placeBet({ userId: u, username: u, amount: 1_000, idempotencyKey: key(u), receivedAt: Date.now() });
@@ -161,7 +161,7 @@ describe('auto cash-out', () => {
   it('is executed by the server at exactly the target; a target >= crash loses', async () => {
     const [s] = seedsWhere((c) => c > 250 && c < 800);
     const { engine, ofType } = makeEngine({ seeds: [s!.seed] });
-    engine.start();
+    engine.start(1);
     await flush();
     await engine.placeBet({ userId: 'a', username: 'a', amount: 1_000, autoX100: 150, idempotencyKey: key('a'), receivedAt: Date.now() });
     await engine.placeBet({ userId: 'b', username: 'b', amount: 1_000, autoX100: 237, idempotencyKey: key('b'), receivedAt: Date.now() });
@@ -188,7 +188,7 @@ describe('auto cash-out', () => {
   it('a manual click after the auto target was passed pays the auto target', async () => {
     const [s] = seedsWhere((c) => c > 300);
     const { engine } = makeEngine({ seeds: [s!.seed] });
-    engine.start();
+    engine.start(1);
     await flush();
     await engine.placeBet({ userId: 'u', username: 'u', amount: 1_000, autoX100: 200, idempotencyKey: key('u'), receivedAt: Date.now() });
     await vi.advanceTimersByTimeAsync(8_000);
@@ -214,7 +214,7 @@ describe('ledger consistency across many rounds', () => {
       while (phase() !== p) await vi.advanceTimersByTimeAsync(50);
     };
 
-    engine.start();
+    engine.start(1);
     for (let i = 0; i < 20; i++) {
       await until('BETTING');
       const roundId = engine.snapshot()!.roundId;
@@ -242,7 +242,7 @@ describe('ledger consistency across many rounds', () => {
 describe('metrics', () => {
   it('records how late timers fire as round-loop latency', async () => {
     const { engine } = makeEngine({ seeds: seedsWhere(() => true).map((s) => s.seed) });
-    engine.start();
+    engine.start(1);
     await vi.advanceTimersByTimeAsync(8_000);
     expect(engine.metrics().loopLatencyMs.max).toBeGreaterThanOrEqual(0);
     engine.stop();

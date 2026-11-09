@@ -1,7 +1,7 @@
 import { crashPointX100, generateHashChain, type RoundEvent } from '@ronin/shared';
 import { RoundEngine, type RoundEngineConfig } from '../src/round/round-engine';
-import { ChainSeedSource, ImmediateDrainBarrier, InMemoryLedger } from '../src/round/in-memory';
-import type { DrainBarrier, RoundSeed, SeedSource } from '../src/round/ports';
+import { ChainSeedSource, ImmediateDrainBarrier, InMemoryLedger, InMemoryRoundStore } from '../src/round/in-memory';
+import type { BetLedger, DrainBarrier, RoundStore, SeedSource } from '../src/round/ports';
 
 export const SALT = 'test-salt';
 export const CONFIG: RoundEngineConfig = {
@@ -30,14 +30,12 @@ export function seedsWhere(...predicates: Array<(crashX100: number) => boolean>)
   });
 }
 
+/** Round r uses seeds[r-1]; repeats the last seed if the test runs more rounds than seeds. */
 export class ListSeedSource implements SeedSource {
   readonly commitment = '0'.repeat(64);
-  private i = 0;
   constructor(private readonly seeds: string[]) {}
-  async next(): Promise<RoundSeed> {
-    const seed = this.seeds[this.i] ?? this.seeds.at(-1)!;
-    this.i++;
-    return { roundId: this.i, seed };
+  async seedFor(roundId: number): Promise<string> {
+    return this.seeds[roundId - 1] ?? this.seeds.at(-1)!;
   }
 }
 
@@ -52,23 +50,34 @@ export class ManualDrain implements DrainBarrier {
   }
 }
 
-export function makeEngine(opts: { seeds: string[]; drain?: DrainBarrier; balance?: number }) {
+export function makeEngine(opts: {
+  seeds: string[];
+  drain?: DrainBarrier;
+  balance?: number;
+  /** Share storage with another engine to simulate a failover. */
+  ledger?: BetLedger & Partial<InMemoryLedger>;
+  store?: RoundStore;
+  onFenced?: () => void;
+}) {
   const events: RoundEvent[] = [];
-  const ledger = new InMemoryLedger(opts.balance ?? 100_000);
+  const ledger = (opts.ledger ?? new InMemoryLedger(opts.balance ?? 100_000)) as InMemoryLedger;
+  const store = opts.store ?? new InMemoryRoundStore(ledger);
   const clock = { now: () => Date.now() };
   const engine = new RoundEngine({
     clock,
     seeds: new ListSeedSource(opts.seeds),
     ledger,
+    store,
     drain: opts.drain ?? new ImmediateDrainBarrier(),
     events: { emit: (e) => events.push(e) },
     config: CONFIG,
     onError: (e) => {
       throw e;
     },
+    onFenced: opts.onFenced,
   });
   const ofType = <T extends RoundEvent['type']>(t: T) => events.filter((e): e is Extract<RoundEvent, { type: T }> => e.type === t);
-  return { engine, events, ledger, clock, ofType };
+  return { engine, events, ledger, store, clock, ofType };
 }
 
 export { ChainSeedSource };
