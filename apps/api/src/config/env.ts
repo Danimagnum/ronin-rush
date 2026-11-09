@@ -36,6 +36,26 @@ export const EnvSchema = z.object({
   CLOCK_SYNC_MS: z.coerce.number().int().positive().default(5_000),
 
   PLATFORM_MODE: bool,
+  PLATFORM_JWT_PUBLIC_KEY: z.string().optional(),
+  PLATFORM_JWT_ISSUER: z.string().optional(),
+  PLATFORM_JWT_AUDIENCE: z.string().optional(),
+
+  JWT_SECRET: z.string().min(16).default('dev-only-insecure-secret-change-me'),
+  JWT_TTL_SECONDS: z.coerce.number().int().positive().default(7 * 24 * 3600),
+
+  /** Comma-separated brokers; empty = outbox relay runs in dry-run mode (marks + taps, no Kafka). */
+  KAFKA_BROKERS: z.string().default(''),
+  KAFKA_CLIENT_ID: z.string().default('ronin-rush-api'),
+
+  BOTS_COUNT: z.coerce.number().int().min(0).max(100).default(12),
+  CORS_ORIGIN: z.string().default('*'),
+}).superRefine((env, ctx) => {
+  if (env.NODE_ENV === 'production' && env.JWT_SECRET === 'dev-only-insecure-secret-change-me') {
+    ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'must be set in production' });
+  }
+  if (env.PLATFORM_MODE && !env.PLATFORM_JWT_PUBLIC_KEY) {
+    ctx.addIssue({ code: 'custom', path: ['PLATFORM_JWT_PUBLIC_KEY'], message: 'required when PLATFORM_MODE=true' });
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;

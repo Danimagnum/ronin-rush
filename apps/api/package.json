@@ -16,10 +16,14 @@
     "@nestjs/core": "^11.0.10",
     "@nestjs/platform-express": "^11.0.10",
     "@ronin/shared": "workspace:*",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "argon2": "^0.41.1",
     "ioredis": "^5.4.2",
+    "kafkajs": "^2.2.4",
     "pg": "^8.13.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "socket.io": "^4.8.1",
     "typeorm": "^0.3.20",
     "zod": "^3.24.2"
   },
@@ -27,6 +31,7 @@
     "@nestjs/cli": "^11.0.2",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.0",
+    "socket.io-client": "^4.8.1",
     "typescript": "~5.7.3",
     "vitest": "^3.0.5"
   }
