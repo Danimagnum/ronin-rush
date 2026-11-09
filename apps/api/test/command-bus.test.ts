@@ -4,7 +4,8 @@ import { COMMAND_STREAM, CommandBus, compareStreamIds, type BusCommand } from '.
 import { RedisDrainBarrier } from '../src/realtime/redis-drain-barrier';
 import type { BetResult } from '../src/round/round-engine';
 
-const REDIS_URL = process.env.REDIS_URL;
+// Own logical DB: never share the command stream with a dev stack running on DB 0.
+const REDIS_URL = process.env.REDIS_URL ? process.env.REDIS_URL.replace(/\/\d*$/, '') + '/2' : undefined;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clock = { now: () => Date.now() };
 

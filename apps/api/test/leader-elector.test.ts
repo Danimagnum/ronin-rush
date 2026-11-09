@@ -6,7 +6,7 @@ import { LeaderElector } from '../src/leader/leader-elector';
  * Runs against a real Redis (REDIS_URL, e.g. the docker-compose service). Skipped when absent
  * so `pnpm test` still works on a machine with nothing running.
  */
-const REDIS_URL = process.env.REDIS_URL;
+const REDIS_URL = process.env.REDIS_URL ? process.env.REDIS_URL.replace(/\/\d*$/, '') + '/3' : undefined;
 const KEY = `ronin:test:leader:${process.pid}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
