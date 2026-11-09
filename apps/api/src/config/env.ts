@@ -12,6 +12,11 @@ export const EnvSchema = z.object({
   PORT: z.coerce.number().int().default(3001),
   INSTANCE_ID: z.string().default(`${hostname()}-${process.pid}`),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),
+  /**
+   * Prefix for Redis pub/sub channels (Socket.IO adapter, command replies). Pub/sub ignores the
+   * logical DB number, so two environments sharing one Redis server must use different values.
+   */
+  REDIS_NAMESPACE: z.string().regex(/^[a-z0-9-]+$/).default('ronin'),
   DATABASE_URL: z.string().url().default('postgres://ronin:ronin@localhost:5432/ronin'),
   DB_POOL_SIZE: z.coerce.number().int().positive().default(20),
   MIGRATE_ON_BOOT: z

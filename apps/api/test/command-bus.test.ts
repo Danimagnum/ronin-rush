@@ -33,7 +33,7 @@ describe.skipIf(!REDIS_URL)('CommandBus (real Redis)', () => {
   afterAll(() => redis.disconnect());
 
   function bus(instanceId: string, leader: boolean, handler: (c: BusCommand) => Promise<BetResult>) {
-    const b = new CommandBus(redis, { instanceId, clock, isLeader: () => leader, handler, replyTimeoutMs: 1_000 });
+    const b = new CommandBus(redis, { instanceId, clock, isLeader: () => leader, handler, replyTimeoutMs: 1_000, channelPrefix: 'ronin-test' });
     buses.push(b);
     return b;
   }

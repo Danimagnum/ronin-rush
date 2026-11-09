@@ -9,7 +9,6 @@ export type BusHandler = (cmd: BusCommand) => Promise<BetResult>;
 export const COMMAND_STREAM = 'ronin:commands';
 const CURSOR_KEY = 'ronin:commands:cursor';
 const WATERMARK_PREFIX = 'ronin:wm:';
-const replyChannel = (instanceId: string) => `ronin:reply:${instanceId}`;
 
 /** Stream ids are "ms-seq"; compare numerically. */
 export function compareStreamIds(a: string, b: string): number {
@@ -25,6 +24,8 @@ export interface CommandBusOptions {
   handler: BusHandler;
   replyTimeoutMs?: number;
   watermarkEveryMs?: number;
+  /** Pub/sub channels are server-wide (not per logical DB): namespace them per environment. */
+  channelPrefix?: string;
 }
 
 /**
@@ -55,6 +56,8 @@ export class CommandBus {
   forwarded = 0;
   consumed = 0;
 
+  private readonly replyChannel = (instanceId: string) => `${this.opts.channelPrefix ?? 'ronin'}:reply:${instanceId}`;
+
   constructor(
     private readonly redis: Redis,
     private readonly opts: CommandBusOptions,
@@ -64,7 +67,7 @@ export class CommandBus {
   }
 
   async start(): Promise<void> {
-    await this.sub.subscribe(replyChannel(this.opts.instanceId));
+    await this.sub.subscribe(this.replyChannel(this.opts.instanceId));
     this.sub.on('message', (_ch, msg) => {
       const { corr, result } = JSON.parse(msg) as { corr: string; result: BetResult };
       const resolve = this.waiters.get(corr);
@@ -174,7 +177,7 @@ export class CommandBus {
     void this.opts
       .handler(msg.cmd)
       .catch((): BetResult => ({ ok: false, error: 'NOT_LEADER' }))
-      .then((result) => this.redis.publish(replyChannel(msg.replyTo), JSON.stringify({ corr: msg.corr, result })));
+      .then((result) => this.redis.publish(this.replyChannel(msg.replyTo), JSON.stringify({ corr: msg.corr, result })));
   }
 
   // ── drain support ────────────────────────────────────────────────────────
