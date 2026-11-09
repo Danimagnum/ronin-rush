@@ -6,6 +6,11 @@ export interface LeaderElectorOptions {
   /** Lease length. A crashed leader is replaced after at most ttlMs + renewEveryMs. */
   ttlMs?: number;
   renewEveryMs?: number;
+  /**
+   * Highest token already used downstream (e.g. the database fence). Guarantees a fresh token
+   * stays above it even if Redis lost its counter (restart without persistence, failover).
+   */
+  minToken?: () => Promise<number>;
 }
 
 export type LeadershipListener = (isLeader: boolean, fencingToken: number | null) => void;
@@ -86,7 +91,7 @@ export class LeaderElector {
       } else {
         const ok = await this.redis.set(this.key, this.opts.instanceId, 'PX', this.ttlMs, 'NX');
         if (ok === 'OK') {
-          const token = await this.redis.incr(`${this.key}:fencing`);
+          const token = await this.nextToken();
           this.lastConfirmedAt = startedAt;
           this.setLeader(true, token);
         }
@@ -99,6 +104,18 @@ export class LeaderElector {
     } finally {
       this.ticking = false;
     }
+  }
+
+  private async nextToken(): Promise<number> {
+    const counter = `${this.key}:fencing`;
+    let token = await this.redis.incr(counter);
+    const floor = this.opts.minToken ? await this.opts.minToken() : 0;
+    if (token <= floor) {
+      // Only the lease holder gets here, so raising the counter cannot race another leader.
+      await this.redis.set(counter, floor);
+      token = await this.redis.incr(counter);
+    }
+    return token;
   }
 
   private setLeader(isLeader: boolean, token: number | null): void {

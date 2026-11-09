@@ -73,6 +73,14 @@ describe.skipIf(!REDIS_URL)('LeaderElector (real Redis)', () => {
     await b.stop();
   });
 
+  it('keeps tokens above the database fence even if Redis lost its counter', async () => {
+    await redis.set(`${KEY}:fencing`, 0); // e.g. Redis restarted without persistence
+    const a = new LeaderElector(redis, { instanceId: 'a', key: KEY, ttlMs: 400, renewEveryMs: 100, minToken: async () => 41 });
+    await a.start();
+    expect(a.fencingToken).toBe(42);
+    await a.stop();
+  });
+
   it('steps down as soon as it sees another owner of the lease', async () => {
     const a = make('a');
     await a.start();
