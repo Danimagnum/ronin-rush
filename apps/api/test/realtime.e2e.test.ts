@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { multiplierX100At, SOCKET_EVENTS, type RoundEvent, type ServerHello } from '@ronin/shared';
+import { multiplierX100At, sha256Hex, SOCKET_EVENTS, type RoundEvent, type ServerHello } from '@ronin/shared';
 import Redis from 'ioredis';
 import { Client } from 'pg';
 import { io, type Socket } from 'socket.io-client';
@@ -31,7 +31,8 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
   const events: RoundEvent[] = [];
   const balances: number[] = [];
 
-  const http = async (port: number, path: string, init?: { method?: string; body?: unknown; token?: string }) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const http = async (port: number, path: string, init?: { method?: string; body?: unknown; token?: string }): Promise<{ status: number; body: any }> => {
     const res = await fetch(`http://127.0.0.1:${port}${path}`, {
       method: init?.method ?? 'GET',
       headers: { 'content-type': 'application/json', ...(init?.token ? { authorization: `Bearer ${init.token}` } : {}) },
@@ -67,7 +68,8 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
     procs.set(name, p);
   }
 
-  const health = (port: number) => http(port, '/health').then((r) => r.body).catch(() => null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const health = (port: number): Promise<any> => http(port, '/health').then((r) => r.body).catch(() => null);
   async function until<T>(fn: () => Promise<T | null | undefined | false> | T | null | undefined | false, timeoutMs = 20_000): Promise<T> {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
@@ -165,11 +167,13 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
     });
     const ackAt = serverNow();
     if (process.env.E2E_DEBUG) console.log('cash-out result', JSON.stringify(res), 'elapsed at send', sentAt - started.startedAt);
-    const crashed = events.find((e): e is Extract<RoundEvent, { type: 'round.crashed' }> => e.type === 'round.crashed' && e.roundId === betting.roundId);
     if (!res.ok) {
-      // The round crashed before our click reached the server: that is the only acceptable failure.
+      // The only acceptable failure: the crash instant came before our click reached the server.
+      // The rejection can arrive before the crashed broadcast (the click may be processed while
+      // the crash timer is still pending), so wait for the event and compare instants.
       expect(res.error).toBe('CASHOUT_AFTER_CRASH');
-      expect(crashed).toBeDefined();
+      const crashed = await nextEvent('round.crashed', (e) => e.roundId === betting.roundId, 0);
+      expect(crashed.crashedAt).toBeLessThanOrEqual(ackAt + 30);
       return;
     }
     const x = res.bet!.cashoutX100;
@@ -206,7 +210,13 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
     const snap = await http(relayPort, '/api/round');
     expect(snap.status).toBe(200);
     const recent = await http(relayPort, '/api/rounds/recent');
-    expect(recent.body.length).toBeGreaterThan(0);
+    const ids = recent.body.map((r: { roundId: number }) => r.roundId);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length); // no duplicates
+    expect(ids).toEqual([...ids].sort((a: number, b: number) => b - a)); // newest first
+    const lastSettled = [...events].reverse().find((e) => e.type === 'round.settled') as Extract<RoundEvent, { type: 'round.settled' }>;
+    expect(ids[0]).toBeGreaterThanOrEqual(lastSettled.roundId); // not lagging behind the live stream
+    expect(recent.body[0].seedHash).toBe(sha256Hex(recent.body[0].seed));
 
     const lb = await http(relayPort, '/api/leaderboard');
     expect(lb.body).toHaveProperty('bestMultiplier');

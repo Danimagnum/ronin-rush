@@ -1,5 +1,5 @@
 import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
-import { RoundSnapshot, SettledRoundSummary, type RoundEvent, type ServerHello } from '@ronin/shared';
+import { RoundSnapshot, SettledRoundSummary, sha256Hex, type RoundEvent, type ServerHello } from '@ronin/shared';
 import type Redis from 'ioredis';
 import type { Clock } from '../clock/clock';
 import type { Env } from '../config/env';
@@ -37,8 +37,15 @@ export class ReadModel implements OnModuleInit {
   private async onEvent(e: RoundEvent): Promise<void> {
     if (!this.runner.isLeader) return;
     if (e.type === 'round.settled') {
-      const summary = this.runner.engine.recentRounds()[0];
-      if (summary) await this.redis.multi().lpush(HISTORY_KEY, JSON.stringify(summary)).ltrim(HISTORY_KEY, 0, HISTORY_SIZE - 1).exec();
+      // Built from the event itself: it is the source of truth at this instant.
+      const summary: SettledRoundSummary = {
+        roundId: e.roundId,
+        crashX100: e.crashX100,
+        seed: e.seed,
+        seedHash: sha256Hex(e.seed),
+        settledAt: e.settledAt,
+      };
+      await this.redis.multi().lpush(HISTORY_KEY, JSON.stringify(summary)).ltrim(HISTORY_KEY, 0, HISTORY_SIZE - 1).exec();
     }
     if (e.type === 'round.betting' && (await this.redis.llen(HISTORY_KEY)) === 0) {
       const recent = this.runner.engine.recentRounds();
