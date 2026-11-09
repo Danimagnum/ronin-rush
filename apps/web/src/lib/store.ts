@@ -1,5 +1,5 @@
 'use client';
-import type { PublicBet, RoundEvent, RoundPhase, RoundSnapshot, ServerHello, SessionUser, SettledRoundSummary } from '@ronin/shared';
+import type { PublicBet, RoundEvent, RoundPhase, RoundSnapshot, ServerHello, SessionUser, SettledRoundSummary, SystemMetrics } from '@ronin/shared';
 import { create } from 'zustand';
 
 export interface RoundView {
@@ -27,11 +27,15 @@ export interface GameState {
   fairness: { commitment: string; publicSalt: string } | null;
   sound: boolean;
   systemView: boolean;
+  /** Latest push from the leader while the System view is open; last 60 bets/s samples for the sparkline. */
+  system: SystemMetrics | null;
+  betsHistory: number[];
   sessionStartedAt: number;
 
   applyHello: (h: ServerHello) => void;
   applyEvent: (e: RoundEvent) => void;
   setBalance: (balance: number) => void;
+  applySystem: (m: SystemMetrics) => void;
   setAuth: (token: string | null, user: SessionUser | null) => void;
   set: (patch: Partial<GameState>) => void;
 }
@@ -61,6 +65,8 @@ export const useGame = create<GameState>((set, get) => ({
   fairness: null,
   sound: false,
   systemView: false,
+  system: null,
+  betsHistory: [],
   sessionStartedAt: Date.now(),
 
   applyHello: (h) =>
@@ -109,6 +115,8 @@ export const useGame = create<GameState>((set, get) => ({
       }
     }
   },
+
+  applySystem: (m) => set({ system: m, betsHistory: [...get().betsHistory, m.betsPerSecond].slice(-60) }),
 
   setBalance: (balance) => {
     const u = get().user;

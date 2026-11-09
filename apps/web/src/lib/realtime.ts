@@ -1,5 +1,5 @@
 'use client';
-import { SOCKET_EVENTS, type CommandError, type PublicBet, type RoundEvent, type ServerHello, type TimePong } from '@ronin/shared';
+import { SOCKET_EVENTS, type CommandError, type PublicBet, type RoundEvent, type ServerHello, type SystemMetrics, type TimePong } from '@ronin/shared';
 import { io, type Socket } from 'socket.io-client';
 import { clock } from './clock';
 import { API_URL } from './config';
@@ -19,8 +19,11 @@ export function connect(token: string | null): void {
   socket = io(API_URL, { transports: ['websocket', 'polling'], auth: token ? { token } : {}, reconnectionDelayMax: 4_000 });
   socket.on('connect', () => {
     useGame.getState().set({ connection: 'online' });
+    // Re-join the metrics room after a reconnect if the System view is open.
+    if (useGame.getState().systemView) socket?.emit(SOCKET_EVENTS.systemSubscribe, true);
     void syncBurst();
   });
+  socket.on(SOCKET_EVENTS.systemMetrics, (m: SystemMetrics) => useGame.getState().applySystem(m));
   socket.on('disconnect', () => useGame.getState().set({ connection: 'offline' }));
   socket.on(SOCKET_EVENTS.hello, (h: ServerHello) => useGame.getState().applyHello(h));
   socket.on(SOCKET_EVENTS.roundEvent, (e: RoundEvent) => useGame.getState().applyEvent(e));
