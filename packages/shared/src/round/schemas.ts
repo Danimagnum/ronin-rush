@@ -146,5 +146,51 @@ export const CommandError = z.enum([
   'CASHOUT_AFTER_CRASH',
   'ROUND_MISMATCH',
   'NOT_LEADER',
+  'UNAUTHENTICATED',
+  'RATE_LIMITED',
+  'TIMEOUT',
 ]);
 export type CommandError = z.infer<typeof CommandError>;
+
+// ── socket contract ────────────────────────────────────────────────────────
+
+export const SOCKET_EVENTS = {
+  /** server -> client, once on connect */
+  hello: 'hello',
+  /** server -> client broadcast: every RoundEvent */
+  roundEvent: 'round:event',
+  /** server -> client (own room): wallet balance after a money movement */
+  balance: 'balance',
+  /** server -> client (room "system"): live metrics for the System view */
+  systemMetrics: 'system:metrics',
+  /** client -> server, with ack */
+  timePing: 'time:ping',
+  placeBet: 'bet:place',
+  cashout: 'bet:cashout',
+  /** client -> server: join/leave the System view metrics room */
+  systemSubscribe: 'system:subscribe',
+} as const;
+
+export const SettledRoundSummary = z.object({
+  roundId: z.number().int().positive(),
+  crashX100: x100,
+  seed: seedHex,
+  seedHash: seedHex,
+  settledAt: epochMs,
+});
+export type SettledRoundSummary = z.infer<typeof SettledRoundSummary>;
+
+export const SessionUser = z.object({ id: z.string(), username: z.string(), balance: cents });
+export type SessionUser = z.infer<typeof SessionUser>;
+
+export const ServerHello = z.object({
+  instanceId: z.string(),
+  serverTime: epochMs,
+  snapshot: RoundSnapshot.nullable(),
+  history: z.array(SettledRoundSummary),
+  user: SessionUser.nullable(),
+  fairness: z.object({ commitment: seedHex, publicSalt: z.string() }),
+});
+export type ServerHello = z.infer<typeof ServerHello>;
+
+export type CommandAck<T> = { ok: true } & T | { ok: false; error: CommandError };
