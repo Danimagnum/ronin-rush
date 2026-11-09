@@ -84,6 +84,25 @@ describe('leader failover', () => {
     b.engine.stop();
   });
 
+  it('overdue transitions after an outage are not reported as timer latency', async () => {
+    const [s] = seedsWhere((c) => c > 200);
+    const shared = sharedStorage();
+    const a = makeEngine({ seeds: [s!.seed], ...shared });
+    a.engine.start(1);
+    await flush();
+    a.engine.stop(); // dies during BETTING
+    await vi.advanceTimersByTimeAsync(60_000); // the betting window closed a minute ago
+
+    const b = makeEngine({ seeds: [s!.seed], ...shared });
+    b.engine.start(2);
+    await vi.advanceTimersByTimeAsync(100);
+    // Round 1 was started, crashed and settled at once (all overdue); round 2 is now open.
+    expect(b.ofType('round.settled')[0]).toMatchObject({ roundId: 1 });
+    expect(b.engine.snapshot()).toMatchObject({ roundId: 2, phase: 'BETTING' });
+    expect(b.engine.metrics().loopLatencyMs.max).toBeLessThan(50);
+    b.engine.stop();
+  });
+
   it('resumes a BETTING round with its bets and keeps client idempotency', async () => {
     const [s] = seedsWhere(() => true);
     const shared = sharedStorage();

@@ -526,10 +526,13 @@ export class RoundEngine {
   private schedule(name: string, at: number, fn: () => Promise<void>): void {
     this.clearTimer(name);
     if (!this.running) return;
-    const delay = Math.max(0, at - this.deps.clock.now());
+    const scheduledAt = this.deps.clock.now();
+    const delay = Math.max(0, at - scheduledAt);
     const handle = setTimeout(() => {
       this.timers.delete(name);
-      this.recordLatency(this.deps.clock.now() - at);
+      // Timer lateness only: a transition already overdue when scheduled (e.g. resuming after a
+      // failover) is not the event loop's fault and must not pollute the latency metric.
+      this.recordLatency(this.deps.clock.now() - Math.max(at, scheduledAt));
       void this.queue.run(() => (this.running ? fn() : undefined)).catch((e) => this.fail(e));
     }, delay);
     this.timers.set(name, handle);
