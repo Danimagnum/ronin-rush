@@ -74,6 +74,12 @@ export class SpriteFighter {
     this.play('idle', { loop: true, durationMs: 900 });
   }
 
+  /** A raw frame of one of this fighter's clips (used for the cut-in close-up). */
+  frameOf(anim: FighterAnim, index: number): Texture {
+    const frames = this.sheets[anim];
+    return frames[Math.min(index, frames.length - 1)]!;
+  }
+
   get current(): FighterAnim {
     return this.anim;
   }

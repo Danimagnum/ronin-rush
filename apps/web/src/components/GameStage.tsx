@@ -35,7 +35,12 @@ export function GameStage({ audio }: { audio: DuelAudio }) {
     const pixelArt = new URLSearchParams(window.location.search).get('pixel') !== '0';
     const frame = (): SceneFrame => {
       const r = useGame.getState().round;
-      return { phase: r?.phase ?? 'IDLE', roundId: r?.roundId ?? 0, multiplier: liveMultiplier().x };
+      return {
+        phase: r?.phase ?? 'IDLE',
+        roundId: r?.roundId ?? 0,
+        multiplier: liveMultiplier().x,
+        msSinceCrash: r?.crashedAt != null ? clock.serverNow() - r.crashedAt : null,
+      };
     };
     void import('@/game/scene').then(async ({ FightScene }) => {
       const scene = await FightScene.create(el, frame, { onClash: (i) => audio.clash(i), onFinalBlow: () => audio.finalBlow() }, { reducedMotion, lowPower, pixelArt });

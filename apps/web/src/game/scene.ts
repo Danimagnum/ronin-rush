@@ -1,4 +1,5 @@
 import { Application, Container, Graphics, Sprite, Texture, type Ticker } from 'pixi.js';
+import { AnimeFx } from './anime-fx';
 import { BODY_PX, HIT_FRAME, SpriteFighter, loadFighterSheets, type FighterSheets } from './sprite-fighters';
 
 /**
@@ -18,6 +19,8 @@ export interface SceneFrame {
   phase: ScenePhase;
   roundId: number;
   multiplier: number;
+  /** Server-time ms since the crash, or null before it. Decides "watching it live" vs joining late. */
+  msSinceCrash: number | null;
 }
 
 export interface SceneHooks {
@@ -82,6 +85,11 @@ export class FightScene {
   private rimRonin!: Sprite;
   private rimOni!: Sprite;
   private attackClip: 'attack1' | 'attack2' = 'attack1';
+  private anime!: AnimeFx;
+  /** Hit-stop: the duel freezes for a few frames on heavy impacts. */
+  private hitstopUntil = 0;
+  private tierRound = { round: -1, tier: 0 };
+  private pendingFinalFlash = false;
   private aura!: Sprite;
   private dot!: Texture;
   private glow!: Texture;
@@ -169,7 +177,10 @@ export class FightScene {
     this.rimRonin = rim(0xe8e2d2);
     this.rimOni = rim(0xff9a8a);
     this.world.addChild(this.backdrop, this.bambooFar, this.bambooMid, this.ground, this.mist, this.shadows, this.rimOni, this.rimRonin, this.oni.root, this.ronin.root, this.fx, this.bambooNear);
-    this.app.stage.addChild(this.world, this.vignette, this.flash);
+    this.anime = new AnimeFx(this.ronin.frameOf('idle', 0));
+    // Impact field sits in the world right under the fighters, hiding the backdrop.
+    this.world.addChildAt(this.anime.impactField, this.world.getChildIndex(this.shadows));
+    this.app.stage.addChild(this.world, this.vignette, this.anime.speedLines, this.anime.slash, this.anime.cutIn, this.flash);
 
     this.aura = new Sprite(this.glow);
     this.aura.anchor.set(0.5);
@@ -227,6 +238,7 @@ export class FightScene {
       this.vignette.rect(inset, inset, w - inset * 2, h - inset * 2).stroke({ width: edge / 8, color: 0x05070d, alpha: 0.09 });
     }
 
+    this.anime?.resize(w, h);
     this.px = FightScene.pixelZoom(h);
     if (this.opts.pixelArt && Math.abs(this.app.renderer.resolution - 1 / this.px) > 1e-6) {
       this.app.renderer.resolution = 1 / this.px;
@@ -303,7 +315,8 @@ export class FightScene {
     const realDt = Math.min(ticker.deltaMS, 50);
     this.adaptQuality(ticker.FPS);
     const now = performance.now();
-    this.timeScale = now < this.slowmoUntil ? 0.3 : approach(this.timeScale, 1, 0.15, realDt);
+    if (now < this.hitstopUntil) this.timeScale = 0;
+    else this.timeScale = now < this.slowmoUntil ? 0.3 : approach(this.timeScale, Math.max(this.timeScale, 1), 0.15, realDt);
     const dt = realDt * this.timeScale;
     this.time += dt / 1000;
 
@@ -311,6 +324,7 @@ export class FightScene {
     const { rage, frenzy, tier } = intensityFor(f.multiplier);
     const fighting = f.phase === 'RUNNING';
     const defeated = f.phase === 'CRASHED' || f.phase === 'SETTLED';
+    if (fighting) this.onTier(f.roundId, tier);
 
     // Ambient: bamboo sway, mist drift, fireflies.
     const sway = this.opts.reducedMotion ? 0 : 1;
@@ -399,7 +413,37 @@ export class FightScene {
       this.ronin.root.alpha = Math.min(this.ronin.root.alpha, this.fadeIn);
       this.oni.root.alpha = this.fadeIn;
     } else if (!defeated) this.oni.root.alpha = 1;
+    this.anime.update(realDt);
+    // Impact frame: black silhouettes on a white field, then the cut and the flash.
+    const impact = this.anime.impactActive;
+    this.ronin.sprite.tint = impact ? 0x000000 : this.ronin.sprite.tint === 0x000000 ? 0xffffff : this.ronin.sprite.tint;
+    if (impact) this.oni.sprite.tint = 0x000000;
+    this.fx.visible = this.rimRonin.visible = this.rimOni.visible = this.bambooNear.visible = this.vignette.visible = !impact;
+    if (this.pendingFinalFlash && !impact) {
+      this.pendingFinalFlash = false;
+      this.oni.sprite.tint = 0xff7a7a;
+      this.flashAlpha = 0.85;
+      this.shake = 18;
+      this.anime.slashAcross(420);
+      this.burst(this.ronin.root.x, groundY - 30 * this.px, 40, 1);
+    }
     this.lastDt = realDt;
+  }
+
+  /** Crossing into the enraged tier fires speed lines; into frenzy, the cut-in close-up. Once per round each. */
+  private onTier(roundId: number, tier: number): void {
+    if (this.tierRound.round !== roundId) this.tierRound = { round: roundId, tier: 0 };
+    if (tier <= this.tierRound.tier) return;
+    this.tierRound.tier = tier;
+    if (this.opts.reducedMotion) return;
+    const focus = this.world.toGlobal({ x: this.w / 2, y: this.h * 0.8 - 30 * this.px });
+    if (tier === 1) {
+      this.anime.speedLinesAt(focus.x, focus.y, 0.7, 520, 0xffd2d2);
+    } else if (tier === 2) {
+      this.anime.speedLinesAt(focus.x, focus.y, 1, 900, 0xf6dd9b);
+      this.anime.showCutIn(this.ronin.frameOf('idle', 0));
+      this.hitstopUntil = performance.now() + 140;
+    }
   }
 
   /**
@@ -447,8 +491,13 @@ export class FightScene {
       const contactY = this.h * 0.8 - 30 * this.px; // blade height in sprite pixels above the feet
       const intensity = tier === 0 ? 0.35 : tier === 1 ? 0.6 + rage * 0.3 : 1;
       this.burst(contactX, contactY, tier === 0 ? 6 : tier === 1 ? 14 : 26, intensity);
-      if (tier >= 1 && !this.opts.reducedMotion) this.shake = Math.max(this.shake, 3 + rage * 8 + (frenzy ? 5 : 0));
-      if (frenzy && !this.opts.reducedMotion) this.slowmoUntil = performance.now() + 260;
+      if (tier >= 1 && !this.opts.reducedMotion) {
+        this.shake = Math.max(this.shake, 3 + rage * 8 + (frenzy ? 5 : 0));
+        const g = this.world.toGlobal({ x: contactX, y: contactY });
+        this.anime.speedLinesAt(g.x, g.y, frenzy ? 1 : 0.45 + rage * 0.4, frenzy ? 260 : 180, frenzy ? 0xf6dd9b : 0xffffff);
+        this.hitstopUntil = performance.now() + (frenzy ? 90 : 45);
+      }
+      if (frenzy && !this.opts.reducedMotion) this.slowmoUntil = performance.now() + 90 + 260;
       this.hooks.onClash?.(intensity);
     }
   }
@@ -458,16 +507,25 @@ export class FightScene {
     const freshCrash = this.crashRound !== f.roundId;
     if (freshCrash) {
       this.crashRound = f.roundId;
-      const live = f.phase === 'CRASHED'; // late joiners only see the aftermath
+      // Live if the crash happened moments ago, whichever phase we first observe: CRASHED can last
+      // only a few ms before SETTLED, so the phase alone would skip the final blow on slow frames.
+      const live = f.msSinceCrash !== null && f.msSinceCrash < 1_500;
       this.crashT = live ? 0 : 1;
       this.oni.sprite.tint = 0xff7a7a;
       this.oni.play('attack2', { durationMs: 420, restart: true, hold: true });
       this.ronin.play(live ? 'take-hit' : 'death', { durationMs: live ? 260 : 1, restart: true, hold: true });
       if (live) {
-        this.flashAlpha = this.opts.reducedMotion ? 0.35 : 0.9;
-        this.shake = this.opts.reducedMotion ? 0 : 18;
-        this.burst(this.ronin.root.x, groundY - 30 * this.px, 40, 1);
         this.hooks.onFinalBlow?.();
+        if (this.opts.reducedMotion) {
+          this.flashAlpha = 0.35;
+        } else {
+          // Freeze, cut to the inverted impact frame, then slash + flash (see tick).
+          this.hitstopUntil = performance.now() + 160;
+          this.anime.impact(150);
+          this.pendingFinalFlash = true;
+          const g = this.world.toGlobal({ x: this.ronin.root.x, y: groundY - 30 * this.px });
+          this.anime.speedLinesAt(g.x, g.y, 1, 700, 0xffffff);
+        }
       }
     }
     this.crashT = Math.min(1, this.crashT + realDt / 900);
