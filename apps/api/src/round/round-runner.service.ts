@@ -26,6 +26,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
   readonly elector: LeaderElector;
   readonly bus: CommandBus;
   engine!: RoundEngine;
+  drain!: RedisDrainBarrier;
   chain!: ActiveChain;
   private shuttingDown = false;
 
@@ -45,6 +46,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
     });
     this.bus = new CommandBus(redis, {
       instanceId: env.INSTANCE_ID,
+      channelPrefix: env.REDIS_NAMESPACE,
       clock,
       isLeader: () => this.elector.isLeader && this.engine?.isRunning === true,
       handler: (cmd) => (cmd.kind === 'bet' ? this.engine.placeBet(cmd.input) : this.engine.cashOut(cmd.input)),
@@ -71,9 +73,9 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
       seeds: new PostgresSeedSource(this.ds, this.chain),
       ledger: this.ledger,
       store: new PostgresRoundStore(this.ds, this.chain.chainId),
-      drain: new RedisDrainBarrier(this.bus, (lagging) =>
+      drain: (this.drain = new RedisDrainBarrier(this.bus, (lagging) =>
         this.log.warn(`drain timeout: settling without waiting for ${lagging.join(', ')}`),
-      ),
+      )),
       events: {
         emit: (e) => {
           this.logEvent(e);

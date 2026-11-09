@@ -50,6 +50,7 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
         PORT: String(port),
         DATABASE_URL: e2eDbUrl,
         REDIS_URL: redisUrl,
+        REDIS_NAMESPACE: 'ronin-e2e', // pub/sub is server-wide: never hear a dev stack on the same Redis
         BETTING_MS: '1500',
         RESULT_MS: '600',
         GROWTH_K: String(K),
@@ -230,6 +231,25 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
     const r = new Redis(redisUrl);
     expect(await r.llen('ronin:kafka:tap')).toBeGreaterThan(0); // outbox relay (dry-run) is draining
     r.disconnect();
+  });
+
+  it('system view: a socket on the relay receives the leader\'s live metrics', async () => {
+    const metrics = await new Promise<Record<string, any>>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('no system metrics')), 5_000);
+      sock.once(SOCKET_EVENTS.systemMetrics, (m: Record<string, any>) => {
+        clearTimeout(t);
+        resolve(m);
+      });
+      sock.emit(SOCKET_EVENTS.systemSubscribe, true);
+    });
+    sock.emit(SOCKET_EVENTS.systemSubscribe, false);
+    expect(metrics.leader).toBe('e2e-a');
+    expect(metrics.instances.map((i: { instanceId: string }) => i.instanceId)).toEqual(['e2e-a', 'e2e-b']);
+    expect(metrics.instances.find((i: { instanceId: string }) => i.instanceId === 'e2e-b').connections).toBeGreaterThanOrEqual(1);
+    expect(metrics.ledger.sumOfPostings).toBe(0);
+    expect(metrics.ledger.recent.length).toBeGreaterThan(0);
+    expect(metrics.kafka.mode).toBe('dry-run');
+    expect(metrics.loop).toHaveProperty('p99Ms');
   });
 
   it('survives a leader crash: the relay takes over and the socket keeps receiving rounds', async () => {
