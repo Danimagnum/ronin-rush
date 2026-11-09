@@ -21,7 +21,7 @@ export class HealthController {
       leader: this.runner.elector.isLeader,
       fencingToken: this.runner.elector.fencingToken,
       redis,
-      engine: this.runner.engine.metrics(),
+      engine: this.runner.engine?.metrics() ?? null,
     };
   }
 }

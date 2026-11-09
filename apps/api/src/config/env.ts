@@ -12,6 +12,14 @@ export const EnvSchema = z.object({
   PORT: z.coerce.number().int().default(3001),
   INSTANCE_ID: z.string().default(`${hostname()}-${process.pid}`),
   REDIS_URL: z.string().url().default('redis://localhost:6379'),
+  DATABASE_URL: z.string().url().default('postgres://ronin:ronin@localhost:5432/ronin'),
+  DB_POOL_SIZE: z.coerce.number().int().positive().default(20),
+  MIGRATE_ON_BOOT: z
+    .enum(['true', 'false', '1', '0'])
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+  /** Play money credited on sign-up (cents). */
+  SIGNUP_GRANT_CENTS: z.coerce.number().int().nonnegative().default(100_000),
 
   PUBLIC_SALT: z.string().min(8).default('ronin-rush-public-salt-v1'),
   GROWTH_K: z.coerce.number().positive().default(DEFAULT_GROWTH_PER_MS),
@@ -19,9 +27,9 @@ export const EnvSchema = z.object({
   RESULT_MS: z.coerce.number().int().positive().default(GAME_DEFAULTS.resultMs),
   DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(GAME_DEFAULTS.drainTimeoutMs),
 
-  /** Dev only: deterministic chain. Production chains are generated once and stored (wallet milestone). */
+  /** Dev only: deterministic chain. Otherwise a random chain is generated once on first boot and stored. */
   CHAIN_TERMINAL_SEED: z.string().regex(/^[0-9a-f]{64}$/).optional(),
-  CHAIN_LENGTH: z.coerce.number().int().positive().default(10_000),
+  CHAIN_LENGTH: z.coerce.number().int().positive().default(100_000),
 
   LEADER_TTL_MS: z.coerce.number().int().positive().default(5_000),
   LEADER_RENEW_MS: z.coerce.number().int().positive().default(1_000),

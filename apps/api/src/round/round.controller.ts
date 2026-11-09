@@ -30,9 +30,9 @@ export class RoundController {
   @Get('fairness')
   fairness() {
     return {
-      commitment: this.runner.commitment,
-      publicSalt: this.env.PUBLIC_SALT,
-      chainLength: this.runner.chainLength,
+      commitment: this.runner.chain.commitment,
+      publicSalt: this.runner.chain.publicSalt,
+      chainLength: this.runner.chain.length,
       growthPerMs: this.env.GROWTH_K,
       formula: 'crash = max(1.00, floor(99 / (1 - h/2^52)) / 100), h = first 52 bits of HMAC-SHA256(seed, salt)',
       recentRounds: this.runner.engine.recentRounds(),

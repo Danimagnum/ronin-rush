@@ -1,44 +1,62 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
-import { formatX100, generateHashChain, type RoundEvent } from '@ronin/shared';
+import { formatX100, type RoundEvent } from '@ronin/shared';
 import type Redis from 'ioredis';
+import type { DataSource } from 'typeorm';
 import type { ReferenceAlignedClock } from '../clock/clock';
 import type { Env } from '../config/env';
-import { CLOCK, ENV, REDIS } from '../config/tokens';
+import { CLOCK, DATA_SOURCE, ENV, REDIS } from '../config/tokens';
+import { currentFence } from '../db/fence';
 import { LeaderElector } from '../leader/leader-elector';
-import { ChainSeedSource, ImmediateDrainBarrier, InMemoryLedger } from './in-memory';
+import { PostgresLedger } from '../wallet/postgres-ledger';
+import { ImmediateDrainBarrier } from './in-memory';
+import { PostgresRoundStore } from './postgres-round-store';
+import { PostgresSeedSource, ensureActiveChain, type ActiveChain } from './postgres-seed-source';
 import { RoundEngine } from './round-engine';
 
 /**
  * Wires leadership to the round loop: the instance holding the Redis lease runs the engine,
- * every other instance stays passive (it will relay commands/events in the real-time milestone).
- *
- * Milestone note: the ledger and seed storage are still in memory here; the Postgres ledger,
- * the persisted chain and round recovery on failover land in the wallet milestone.
+ * every other instance stays passive (it relays commands/events in the real-time milestone).
+ * On takeover the engine resumes whatever round the database says is in progress.
  */
 @Injectable()
 export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly log = new Logger('RoundRunner');
   readonly elector: LeaderElector;
-  readonly engine: RoundEngine;
-  readonly ledger = new InMemoryLedger();
-  readonly commitment: string;
-  readonly chainLength: number;
+  engine!: RoundEngine;
+  chain!: ActiveChain;
   private shuttingDown = false;
 
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(REDIS) redis: Redis,
-    @Inject(CLOCK) clock: ReferenceAlignedClock,
+    @Inject(CLOCK) private readonly clock: ReferenceAlignedClock,
+    @Inject(DATA_SOURCE) private readonly ds: DataSource,
+    private readonly ledger: PostgresLedger,
   ) {
-    const chain = generateHashChain(env.CHAIN_LENGTH, env.CHAIN_TERMINAL_SEED);
-    const seeds = new ChainSeedSource(chain.seeds);
-    this.commitment = seeds.commitment;
-    this.chainLength = chain.seeds.length;
+    this.elector = new LeaderElector(redis, {
+      instanceId: env.INSTANCE_ID,
+      ttlMs: env.LEADER_TTL_MS,
+      renewEveryMs: env.LEADER_RENEW_MS,
+      minToken: () => currentFence(this.ds),
+    });
+  }
+
+  async onApplicationBootstrap(): Promise<void> {
+    const { env } = this;
+    this.chain = await ensureActiveChain(this.ds, {
+      length: env.CHAIN_LENGTH,
+      publicSalt: env.PUBLIC_SALT,
+      terminalSeed: env.CHAIN_TERMINAL_SEED,
+    });
+    this.log.log(
+      `${this.chain.created ? 'generated' : 'loaded'} hash chain #${this.chain.chainId}: ${this.chain.length} seeds, commitment ${this.chain.commitment}`,
+    );
 
     this.engine = new RoundEngine({
-      clock,
-      seeds,
+      clock: this.clock,
+      seeds: new PostgresSeedSource(this.ds, this.chain),
       ledger: this.ledger,
+      store: new PostgresRoundStore(this.ds, this.chain.chainId),
       drain: new ImmediateDrainBarrier(),
       events: { emit: (e) => this.logEvent(e) },
       config: {
@@ -51,33 +69,27 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
         maxBetCents: 1_000_000,
       },
       onError: (e) => this.log.error(e instanceof Error ? e.stack : String(e)),
+      onFenced: () => this.log.error('fenced out by a newer leader; round loop stopped'),
+      onResume: ({ roundId, phase }) => this.log.log(`resumed round #${roundId} in phase ${phase}`),
     });
 
-    this.elector = new LeaderElector(redis, {
-      instanceId: env.INSTANCE_ID,
-      ttlMs: env.LEADER_TTL_MS,
-      renewEveryMs: env.LEADER_RENEW_MS,
-    });
     this.elector.onChange((leader, token) => {
       if (leader) {
         this.log.log(`became leader (fencing token ${token}); starting round loop`);
-        this.engine.start();
+        this.engine.start(token!);
       } else {
         if (!this.shuttingDown) this.log.warn('lost leadership; stopping round loop');
         this.engine.stop();
       }
     });
-  }
-
-  async onApplicationBootstrap(): Promise<void> {
-    this.log.log(`hash chain ready: ${this.chainLength} seeds, commitment ${this.commitment}`);
     await this.elector.start();
     if (!this.elector.isLeader) this.log.log('another instance is leader; running as relay');
   }
 
   async onApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
-    this.engine.stop();
+    this.engine?.stop();
+    await this.engine?.idle();
     this.log.log('shutting down: releasing leadership');
     await this.elector.stop();
   }
