@@ -24,7 +24,10 @@ New-Item -ItemType Directory -Force releases | Out-Null
 foreach ($target in "api", "web", "proxy") {
   Write-Host "==> building ronin-rush-${target}:$tag (linux/amd64)" -ForegroundColor Cyan
   # Empty NEXT_PUBLIC_API_URL: the browser calls /api and /socket.io on its own origin (nginx).
+  # --provenance/--sbom off: one plain image manifest instead of an index with attestations,
+  # so `docker save` writes manifest.json and the NAS's Docker 20.10 can `docker load` it.
   docker buildx build --platform linux/amd64 --target $target `
+    --provenance=false --sbom=false `
     --build-arg NEXT_PUBLIC_API_URL= `
     --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" `
     -t "ronin-rush-${target}:$tag" --load .
@@ -35,6 +38,12 @@ $tar = "releases\ronin-rush-$tag.tar"
 Write-Host "==> docker save -> $tar.gz" -ForegroundColor Cyan
 docker save -o $tar "ronin-rush-api:$tag" "ronin-rush-web:$tag" "ronin-rush-proxy:$tag"
 if ($LASTEXITCODE -ne 0) { throw "docker save failed" }
+# Docker 20.10 (Synology) only loads archives with a Docker manifest.json; without it, it falls
+# back to the legacy format and fails with "open .../repositories: no such file or directory".
+if (-not ((tar -tf $tar) -contains "manifest.json")) {
+  Remove-Item $tar
+  throw "docker save produced an OCI-only archive (no manifest.json) that the NAS cannot load. Images must be built with --provenance=false --sbom=false."
+}
 tar -czf "$tar.gz" -C releases "ronin-rush-$tag.tar"   # Windows 10+ ships bsdtar
 Remove-Item $tar
 

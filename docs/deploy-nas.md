@@ -127,6 +127,12 @@ broker is down the game is unaffected, and events wait in the outbox.
 
 ## Troubleshooting
 
+- **`docker load` fails with `open /volume1/@docker/tmp/docker-import-…/repositories: no such file or directory`.**
+  The NAS runs Docker 20.10, which only loads archives that contain a Docker `manifest.json`.
+  Docker Desktop adds provenance attestations by default, which turns each image into an index,
+  and `docker save` then writes an OCI-only archive without that file. The release scripts build
+  with `--provenance=false --sbom=false` and refuse to finish if `manifest.json` is missing.
+
 - **Health and logs:** `sh smoke.sh`, `sudo docker-compose -p ronin-rush ps`,
   `sudo docker-compose -p ronin-rush logs --tail 100 api`.
 - **Database or Redis connections time out although the names resolve.** This was seen with
