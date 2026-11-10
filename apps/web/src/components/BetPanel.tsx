@@ -117,7 +117,8 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
 
   return (
     <section aria-label="Bet" className="rounded-[var(--radius-panel)] bg-ai-800 p-4 sm:p-5">
-      <div className="grid gap-4 md:grid-cols-[1fr_auto_minmax(220px,280px)] md:items-end">
+      {/* Three columns when there is room; with the players sidebar (lg) the button drops to its own row. */}
+      <div className="grid gap-4 md:grid-cols-[1fr_auto_minmax(220px,280px)] md:items-end lg:grid-cols-[1fr_auto] xl:grid-cols-[1fr_auto_minmax(220px,280px)]">
         <div>
           <label htmlFor="stake" className="text-sm text-mist">
             Stake
@@ -198,7 +199,7 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
           <p className="mt-2 text-xs leading-snug text-mist">The server cashes you out at exactly this multiplier.</p>
         </div>
 
-        <div>
+        <div className="lg:col-span-2 xl:col-span-1">
           <button
             type="button"
             onClick={() => void act()}
