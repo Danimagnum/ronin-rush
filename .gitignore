@@ -15,3 +15,6 @@ test-results/
 
 # Asset packs downloaded into the project root (sprites are copied into apps/web/public/assets)
 /*.zip
+
+# Release bundles (docker save)
+/releases/

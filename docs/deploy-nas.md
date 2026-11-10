@@ -1,0 +1,145 @@
+# Deploying the live demo on a Synology NAS (Tailscale Funnel)
+
+The portfolio demo runs on a Synology DS918+ at home and is published to the internet through
+**Tailscale Funnel**. danielgil.eu (hosted elsewhere) embeds it in an iframe. It is an
+independent Compose project: its own folder, project name, credentials, volumes and loopback
+ports. Other stacks on the NAS (SpotKick, platform-staging) are not touched.
+
+| | |
+|---|---|
+| NAS | DS918+, x86_64, 4 GB RAM, DSM 7.1.1, Docker 20.10.3, docker-compose 1.28.5, Tailscale 1.58 |
+| Folder | `/volume1/docker/ronin-rush` |
+| Compose project | `ronin-rush` (file format **2.4**: `mem_limit`, health conditions, profiles; no newer syntax) |
+| Public URL | `https://magnum-play.tail55a5b1.ts.net:10000` |
+| Local ports | `127.0.0.1:3310` → nginx (web + `/api` + `/socket.io`) · `127.0.0.1:3311` → API (diagnostics only) |
+| Not exposed | Postgres, Redis, Redpanda (no published ports), DSM, SSH |
+
+```mermaid
+flowchart LR
+  V["Visitor (danielgil.eu iframe)"] -- "HTTPS :10000" --> F["Tailscale Funnel"]
+  F -- "http://127.0.0.1:3310" --> N["proxy (nginx)"]
+  subgraph "Compose project ronin-rush (bridge network)"
+    N --> W[web]
+    N --> A[api]
+    A --> P[(postgres)]
+    A --> R[(redis)]
+    A -. "optional" .-> K[[redpanda / platform Kafka]]
+  end
+```
+
+Memory limits: postgres 256 MB, redis 64 MB, api 384 MB, web 192 MB, proxy 64 MB. Real use
+is about 350–400 MB. The optional own Redpanda adds a 600 MB cap.
+
+## Files
+
+| In the repo | On the NAS | Purpose |
+|---|---|---|
+| `Dockerfile` | — | Multi-stage build: targets `api`, `web`, `proxy` |
+| `deploy/release.ps1` / `release.sh` | — | Build `linux/amd64` images tagged with the commit, `docker save`, SHA-256 |
+| `deploy/nas/docker-compose.yml` | `docker-compose.yml` | The stack |
+| `deploy/nas/docker-compose.platform-kafka.yml` | same | Optional: join an existing platform Kafka network |
+| `deploy/nas/env.example` | `.env` (**secrets, chmod 600, never in git**) | Created by `init.sh` with random secrets |
+| `deploy/nas/*.sh` | same | `init`, `deploy`, `rollback`, `backup-db`, `restore-db`, `smoke` |
+| `deploy/portfolio/embed-snippet.html` | — | The iframe block for danielgil.eu |
+| `deploy/portfolio/staging.html` | — | Rehearsal page with the embed |
+
+The frontend is built with an **empty `NEXT_PUBLIC_API_URL`**, so the browser calls `/api` and
+`/socket.io` on its own origin. The public URL is therefore not baked into the bundle, and the
+same image works on any host. CORS stays closed (`CORS_ORIGIN` = the public origin), and nginx
+sends `Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu`.
+
+## First install
+
+1. **Folder** (on the NAS over SSH):
+   ```sh
+   sudo mkdir -p /volume1/docker/ronin-rush && sudo chown "$USER" /volume1/docker/ronin-rush
+   ```
+2. **Copy the deploy files** (on the PC, from the repo root; one tarball, so no shell globbing is needed):
+   ```powershell
+   tar -cf ronin-deploy.tar -C deploy/nas .
+   scp ronin-deploy.tar USER@192.168.1.39:/volume1/docker/ronin-rush/
+   ```
+   then on the NAS: `cd /volume1/docker/ronin-rush && tar -xf ronin-deploy.tar && rm ronin-deploy.tar`.
+   DSM's SSH server needs SFTP enabled for modern `scp`. If it fails, add `-O` (legacy protocol).
+3. **Initialise** (NAS): `cd /volume1/docker/ronin-rush && sudo sh init.sh` creates the
+   `data/`, `releases/` and `backups/` folders and a `.env` with random `POSTGRES_PASSWORD`
+   and `JWT_SECRET`.
+4. **Build a release** (PC, Docker Desktop):
+   `powershell -ExecutionPolicy Bypass -File deploy\release.ps1 -NasUser USER`.
+   It prints the exact `scp` and deploy commands.
+5. **Upload and deploy:** run the printed `scp`, then on the NAS `sudo sh deploy.sh <tag>`.
+   The script checks the SHA-256, runs `docker load`, starts the stack, waits for health checks
+   and runs `smoke.sh`.
+6. **Publish with Funnel** (NAS). Port 10000 is one of the three ports Funnel allows. This adds
+   a route and leaves 443 and 8443 as they are:
+   ```sh
+   sudo tailscale funnel --bg --https=10000 http://127.0.0.1:3310
+   tailscale serve status        # 443 → 3300 and 8443 → 3301 must still be listed
+   ```
+7. **Check from outside** (mobile data, not home Wi-Fi): open the public URL, play a whole
+   round as a guest, and try a second browser and a reconnection (toggle airplane mode).
+
+## Update
+
+```text
+PC:   commit → deploy\release.ps1 → scp bundle + .sha256 to releases/
+NAS:  sudo sh deploy.sh <new-tag>
+```
+
+`deploy.sh` backs up the database first (`backups/ronin-<date>-<old-tag>.dump`), records the
+previous tag in `.previous-tag`, switches `RONIN_TAG` in `.env` and recreates only the
+containers that changed. Migrations run on API start, inside an advisory lock.
+
+## Rollback
+
+```sh
+sudo sh rollback.sh                                   # back to .previous-tag (images are still loaded)
+sudo sh rollback.sh <tag>                             # to a specific tag
+sudo sh rollback.sh <tag> backups/<file>.dump         # also restore the database taken before that update
+```
+
+Restore the database only if the newer version ran a migration the older code can't read. The
+restore stops the API, recreates the database from the dump and clears Redis's live round state.
+
+Old bundles in `releases/` and images can be pruned once you no longer need to roll back to
+them: `sudo docker image rm ronin-rush-{api,web,proxy}:<tag>`.
+
+## Kafka on the NAS
+
+Three modes, chosen in `.env`:
+
+| Mode | `.env` | Extra RAM |
+|---|---|---|
+| Dry run | `KAFKA_BROKERS=` | 0. The outbox is drained and shown, but nothing is sent |
+| Own broker | `KAFKA_BROKERS=redpanda:9092` (scripts add `--profile kafka`) | ≤ 600 MB |
+| Platform broker | `KAFKA_BROKERS=<broker>:9092`, `PLATFORM_KAFKA=true`, `PLATFORM_NETWORK=<network>` | 0 |
+
+In the Kafka modes the API also consumes its own topics with a consumer group. The System view
+shows topic, partition, offset, lag and the delay from database commit to consumption. If the
+broker is down the game is unaffected, and events wait in the outbox.
+
+## Troubleshooting
+
+- **Health and logs:** `sh smoke.sh`, `sudo docker-compose -p ronin-rush ps`,
+  `sudo docker-compose -p ronin-rush logs --tail 100 api`.
+- **Database or Redis connections time out although the names resolve.** This was seen with
+  SpotKick on this NAS. Diagnose before changing anything:
+  ```sh
+  sudo docker-compose -p ronin-rush exec api node -e "require('net').connect(5432,'postgres').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log(e.message);process.exit(1)})"
+  sudo docker network inspect ronin-rush_default | grep -E '"Name"|IPv4'
+  ```
+  If TCP to the container IP really fails on the bridge, the fallback used for SpotKick is to
+  share one network namespace (`network_mode: service:postgres` for api and redis) and connect
+  through `127.0.0.1`. Apply it only after reproducing the failure.
+- **Blank iframe:** the browser console shows `frame-ancestors` if the embedding page isn't
+  listed in `FRAME_ANCESTORS` in `.env`. Add it and run `sudo docker-compose -p ronin-rush up -d proxy`.
+- **Funnel:** `tailscale funnel status`. To remove only this route:
+  `sudo tailscale funnel --https=10000 off`.
+
+## Portfolio embed
+
+Paste [`deploy/portfolio/embed-snippet.html`](../deploy/portfolio/embed-snippet.html) into the
+page. It is responsive (fixed height on desktop, about 88% of the viewport on phones), has an
+accessible title, uses `loading="lazy"` and links to open the game in a new tab. Rehearse with
+`deploy/portfolio/staging.html` first. Bots bet every round, so a visitor can play
+immediately as a guest without waiting for anyone.

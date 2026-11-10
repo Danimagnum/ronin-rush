@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ronin Rush embed — staging</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f4f1ea; color: #1c1c1c; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+    .note { background: #fff7d6; border: 1px solid #e7d48a; padding: 10px 14px; border-radius: 8px; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Portfolio staging page</h1>
+    <p class="note">Rehearsal page that mimics a portfolio section. Open it from a host listed in
+      FRAME_ANCESTORS (or from a local server you added there); any other origin must show a blocked frame,
+      which proves the CSP header works.</p>
+    <p>Some portfolio text above the demo…</p>
+    <!-- BEGIN embed-snippet.html -->
+<!-- Ronin Rush — live demo embed for danielgil.eu. Self-contained: paste as-is. -->
+<section class="ronin-demo" aria-labelledby="ronin-demo-title">
+  <h3 id="ronin-demo-title">Ronin Rush — live multiplayer crash game (play money)</h3>
+  <div class="ronin-demo__frame">
+    <iframe
+      src="https://magnum-play.tail55a5b1.ts.net:10000/"
+      title="Ronin Rush: playable demo of a real-time multiplayer crash game"
+      loading="lazy"
+      allow="autoplay; fullscreen"
+      referrerpolicy="strict-origin-when-cross-origin"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+    ></iframe>
+  </div>
+  <p class="ronin-demo__links">
+    <a href="https://magnum-play.tail55a5b1.ts.net:10000/" target="_blank" rel="noopener">Open the game in a new tab ↗</a>
+    · Play money only, no real payments. Bots keep the table busy, so you can play right away.
+  </p>
+  <style>
+    .ronin-demo__frame { position: relative; width: 100%; height: clamp(640px, 90vh, 980px);
+      border-radius: 12px; overflow: hidden; background: #0b0f1a; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+    .ronin-demo__frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .ronin-demo__links { margin-top: .6rem; font-size: .9rem; opacity: .85; }
+    @media (max-width: 760px) {
+      /* Phones: the game stacks its panels vertically, so give it most of the viewport height. */
+      .ronin-demo__frame { height: 88vh; height: 88svh; min-height: 560px; border-radius: 8px; }
+    }
+  </style>
+</section>
+    <!-- END embed-snippet.html -->
+    <p>Some portfolio text below the demo…</p>
+  </main>
+</body>
+</html>

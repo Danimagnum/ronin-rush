@@ -1,0 +1,14 @@
+# Optional override: publish to the Kafka of an existing platform stack on the same NAS instead
+# of running our own broker. Joins that stack's network; nothing else is shared.
+#   sudo docker-compose -p ronin-rush -f docker-compose.yml -f docker-compose.platform-kafka.yml up -d
+# and set KAFKA_BROKERS in .env to that broker's internal listener (e.g. kafka:9092).
+version: "2.4"
+
+services:
+  api:
+    networks: [default, platform]
+
+networks:
+  platform:
+    external:
+      name: ${PLATFORM_NETWORK:-platform-staging_default}

@@ -1,0 +1,105 @@
+# Ronin Rush on a Synology DS918+ (DSM 7.1, Docker 20.10, docker-compose 1.28).
+# File format 2.4 on purpose: mem_limit, healthcheck conditions and profiles, no newer syntax.
+#
+#   cd /volume1/docker/ronin-rush && sudo docker-compose -p ronin-rush up -d
+#
+# Only the nginx proxy (3310) and the API (3311, diagnostics) are published, both on loopback;
+# Tailscale Funnel exposes 3310 publicly. Postgres and Redis publish nothing.
+version: "2.4"
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ronin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ronin
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "effective_cache_size=192MB"]
+    volumes: ["./data/postgres:/var/lib/postgresql/data"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ronin -d ronin"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["./data/redis:/data"]
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *logging
+
+  api:
+    image: ronin-rush-api:${RONIN_TAG:?set in .env}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      INSTANCE_ID: nas-api-1
+      DATABASE_URL: postgres://ronin:${POSTGRES_PASSWORD}@postgres:5432/ronin
+      REDIS_URL: redis://redis:6379/0
+      REDIS_NAMESPACE: ronin-nas
+      DB_POOL_SIZE: "10"
+      NODE_OPTIONS: --max-old-space-size=256
+    ports: ["127.0.0.1:3311:3001"]
+    mem_limit: 384m
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *logging
+
+  web:
+    image: ronin-rush-web:${RONIN_TAG}
+    restart: unless-stopped
+    environment:
+      NODE_OPTIONS: --max-old-space-size=128
+    mem_limit: 192m
+    logging: *logging
+
+  proxy:
+    image: ronin-rush-proxy:${RONIN_TAG}
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:3001
+      WEB_UPSTREAM: web:3000
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-https://danielgil.eu https://www.danielgil.eu}
+    ports: ["127.0.0.1:3310:8080"]
+    mem_limit: 64m
+    depends_on:
+      api: { condition: service_healthy }
+      web: { condition: service_healthy }
+    logging: *logging
+
+  # Own Kafka-compatible broker, only with `--profile kafka` (≈ 600 MB). Set KAFKA_BROKERS=redpanda:9092.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    profiles: ["kafka"]
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=400M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --default-log-level=warn
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    volumes: ["./data/redpanda:/var/lib/redpanda/data"]
+    mem_limit: 600m
+    logging: *logging
