@@ -27,8 +27,14 @@ export async function ensureActiveChain(
     return { chainId: existing.id, commitment: existing.commitment, length: existing.length, publicSalt: existing.public_salt, created: false };
   }
 
-  const chain = generateHashChain(opts.length, opts.terminalSeed);
   return withTransaction(ds, async (q) => {
+    // Several instances may boot at once against an empty database: one generates, the rest reuse.
+    await q.query(`SELECT pg_advisory_xact_lock(hashtext('ronin:fairness-chain'))`);
+    const [raced] = await q.query(`SELECT id, commitment, length, public_salt FROM fairness_chains WHERE active`);
+    if (raced) {
+      return { chainId: raced.id, commitment: raced.commitment, length: raced.length, publicSalt: raced.public_salt, created: false };
+    }
+    const chain = generateHashChain(opts.length, opts.terminalSeed);
     const [row] = await q.query(
       `INSERT INTO fairness_chains (commitment, length, public_salt) VALUES ($1, $2, $3) RETURNING id`,
       [chain.commitment, chain.seeds.length, opts.publicSalt],
