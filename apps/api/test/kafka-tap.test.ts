@@ -4,7 +4,7 @@ import { toConsumedEntry } from '../src/events/kafka-tap-consumer.service';
 describe('Kafka tap consumer mapping', () => {
   it('reports topic, partition, offset and the delay since the outbox row was written', () => {
     const occurredAt = '2026-11-10T10:00:00.000Z';
-    const value = Buffer.from(JSON.stringify({ eventId: 'outbox-42', occurredAt, payload: {} }));
+    const value = Buffer.from(JSON.stringify({ id: '8ad3cd65-76b3-4db5-bf59-ab313bb56cd9', type: 'ronin.bet.placed.v1', occurredAt, data: {} }));
     const now = Date.parse(occurredAt) + 37;
     const e = toConsumedEntry('ronin.bet.placed.v1', 2, { offset: '1088', key: Buffer.from('17'), value, timestamp: String(now - 5) }, now);
     expect(e).toEqual({
@@ -12,7 +12,7 @@ describe('Kafka tap consumer mapping', () => {
       partition: 2,
       offset: '1088',
       key: '17',
-      eventId: 'outbox-42',
+      eventId: '8ad3cd65-76b3-4db5-bf59-ab313bb56cd9',
       endToEndMs: 37,
       consumedAt: new Date(now).toISOString(),
     });

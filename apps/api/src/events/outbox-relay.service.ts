@@ -6,12 +6,14 @@ import type { Env } from '../config/env';
 import { DATA_SOURCE, ENV, REDIS } from '../config/tokens';
 import { appendOutbox } from '../db/outbox';
 import { updateReturning, withTransaction } from '../db/tx';
+import { RoundRunner } from '../round/round-runner.service';
 
 export const KAFKA_TAP_KEY = 'ronin:kafka:tap';
 const BATCH = 200;
 
 interface OutboxRow {
   id: string;
+  event_id: string;
   topic: string;
   key: string;
   payload: unknown;
@@ -21,8 +23,8 @@ interface OutboxRow {
 /**
  * Transactional-outbox relay: moves rows written alongside ledger/round changes to Kafka.
  * Runs on every instance; `FOR UPDATE SKIP LOCKED` lets them share the work without
- * double-publishing. Delivery is at-least-once, so every message carries a stable eventId
- * (outbox id) consumers can dedupe on. Without KAFKA_BROKERS it runs in dry-run mode: rows are
+ * double-publishing. Delivery is at-least-once, so every message carries a stable event id
+ * (a UUID minted with the outbox row) consumers can dedupe on. Messages use the platform envelope. Without KAFKA_BROKERS it runs in dry-run mode: rows are
  * marked and mirrored to the tap only, so the System view still shows the event stream.
  */
 @Injectable()
@@ -39,6 +41,7 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
     @Inject(ENV) private readonly env: Env,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     @Inject(REDIS) private readonly redis: Redis,
+    private readonly runner: RoundRunner,
   ) {}
 
   get mode(): 'kafka' | 'dry-run' {
@@ -81,7 +84,7 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
     try {
       return await withTransaction(this.ds, async (q) => {
         const rows: OutboxRow[] = await q.query(
-          `SELECT id, topic, key, payload, created_at FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+          `SELECT id, event_id, topic, key, payload, created_at FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`,
           [BATCH],
         );
         if (!rows.length) return 0;
@@ -94,14 +97,16 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
               messages: list.map((r) => ({
                 key: r.key,
                 value: JSON.stringify(envelope(r)),
-                headers: { 'event-id': `outbox-${r.id}`, 'event-type': r.topic },
+                headers: { 'event-id': r.event_id, 'event-type': r.topic },
               })),
             })),
           });
         }
         await updateReturning(q, `UPDATE outbox SET published_at = now() WHERE id = ANY($1::bigint[])`, [rows.map((r) => r.id)]);
         const tap = this.redis.multi();
-        for (const r of rows) tap.lpush(KAFKA_TAP_KEY, JSON.stringify({ ...envelope(r), mode: this.mode }));
+        for (const r of rows) {
+          tap.lpush(KAFKA_TAP_KEY, JSON.stringify({ eventId: r.event_id, type: r.topic, key: r.key, occurredAt: new Date(r.created_at).toISOString(), mode: this.mode }));
+        }
         await tap.ltrim(KAFKA_TAP_KEY, 0, 99).exec();
         this.published += rows.length;
         return rows.length;
@@ -114,25 +119,36 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
     }
   }
 
+  /** system.health.reported.v1 (platform contract): status, p95 latency (ms) and error rate (0-1). */
   private async reportHealth(): Promise<void> {
+    const redisUp = await this.redis.ping().then(() => true).catch(() => false);
+    const loop = this.runner.engine?.metrics().loopLatencyMs;
+    const core = this.runner.platform?.core ?? null;
+    const errorRate = core && core.calls ? Math.min(1, core.failures / core.calls) : 0;
     await withTransaction(this.ds, (q) =>
       appendOutbox(q, 'system.health.reported.v1', this.env.INSTANCE_ID, {
-        service: 'ronin-rush-api',
-        instanceId: this.env.INSTANCE_ID,
-        status: 'ok',
-        reportedAt: new Date().toISOString(),
+        service: 'ronin-rush',
+        status: !redisUp ? 'unhealthy' : errorRate > 0.05 ? 'degraded' : 'healthy',
+        latencyP95: Math.round(Math.max(loop?.p99 ?? 0, core?.p95() ?? 0)),
+        errorRate: Math.round(errorRate * 1000) / 1000,
       }),
     ).catch(() => undefined);
   }
 }
 
-function envelope(r: OutboxRow) {
+/**
+ * Platform event envelope (@danigil/platform-contracts): stable UUID id, type = topic,
+ * version = the topic's numeric suffix, source = service name, correlationId = aggregate.
+ */
+export function envelope(r: Pick<OutboxRow, 'event_id' | 'topic' | 'key' | 'payload' | 'created_at'>) {
+  const version = Number(/\.v(\d+)$/.exec(r.topic)?.[1] ?? 1);
   return {
-    eventId: `outbox-${r.id}`,
+    id: r.event_id,
     type: r.topic,
-    version: 1,
-    key: r.key,
+    version,
     occurredAt: new Date(r.created_at).toISOString(),
-    payload: r.payload,
+    source: 'ronin-rush',
+    correlationId: r.topic.startsWith('ronin.') ? `round-${r.key}` : r.key,
+    data: r.payload,
   };
 }

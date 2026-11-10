@@ -119,8 +119,8 @@ export function toConsumedEntry(topic: string, partition: number, message: RawMe
   let eventId = '';
   let occurredAt = Number(message.timestamp);
   try {
-    const body = JSON.parse(message.value?.toString('utf8') ?? '{}') as { eventId?: string; occurredAt?: string };
-    eventId = body.eventId ?? '';
+    const body = JSON.parse(message.value?.toString('utf8') ?? '{}') as { id?: string; occurredAt?: string };
+    eventId = body.id ?? '';
     if (body.occurredAt) occurredAt = Date.parse(body.occurredAt);
   } catch {
     // not one of ours: still shown, without an event id
