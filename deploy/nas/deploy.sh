@@ -15,7 +15,16 @@ actual="$(sha256_of "$BUNDLE")"
 log "SHA-256 verified ($actual)"
 
 log "loading images"
-docker load -i "$BUNDLE"
+# A bundle is `docker save | gzip`. Bundles from older release.ps1 versions wrapped the archive in
+# another tar (one entry, ronin-rush-<tag>.tar); unwrap those first, docker load cannot.
+if tar -tzf "$BUNDLE" | head -n 1 | grep -q '^ronin-rush-.*\.tar$'; then
+  log "unwrapping the inner archive"
+  tar -xzf "$BUNDLE" -C releases
+  docker load -i "releases/ronin-rush-$TAG.tar" || { rm -f "releases/ronin-rush-$TAG.tar"; die "docker load failed"; }
+  rm -f "releases/ronin-rush-$TAG.tar"
+else
+  docker load -i "$BUNDLE" || die "docker load failed"
+fi
 for img in api web proxy; do docker image inspect "ronin-rush-$img:$TAG" >/dev/null || die "image ronin-rush-$img:$TAG not in bundle"; done
 
 PREV="$(current_tag)"

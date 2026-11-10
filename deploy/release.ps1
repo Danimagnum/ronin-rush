@@ -44,7 +44,13 @@ if (-not ((tar -tf $tar) -contains "manifest.json")) {
   Remove-Item $tar
   throw "docker save produced an OCI-only archive (no manifest.json) that the NAS cannot load. Images must be built with --provenance=false --sbom=false."
 }
-tar -czf "$tar.gz" -C releases "ronin-rush-$tag.tar"   # Windows 10+ ships bsdtar
+# Plain gzip of the docker save archive (what `docker load -i` reads), like release.sh.
+# Not `tar -czf`, which would wrap the archive in a second tar that docker load cannot open.
+$src = [IO.File]::OpenRead((Join-Path $PWD $tar))
+$dst = [IO.File]::Create((Join-Path $PWD "$tar.gz"))
+$gz = New-Object IO.Compression.GZipStream($dst, [IO.Compression.CompressionLevel]::Optimal)
+$src.CopyTo($gz)
+$gz.Dispose(); $dst.Dispose(); $src.Dispose()
 Remove-Item $tar
 
 $hash = (Get-FileHash -Algorithm SHA256 "$tar.gz").Hash.ToLower()

@@ -132,6 +132,8 @@ broker is down the game is unaffected, and events wait in the outbox.
   Docker Desktop adds provenance attestations by default, which turns each image into an index,
   and `docker save` then writes an OCI-only archive without that file. The release scripts build
   with `--provenance=false --sbom=false` and refuse to finish if `manifest.json` is missing.
+  Bundles made by older versions of `release.ps1` also wrapped that archive in a second tar;
+  `deploy.sh` unwraps them, and `release.ps1` now writes a plain gzip like `release.sh`.
 
 - **Health and logs:** `sh smoke.sh`, `sudo docker-compose -p ronin-rush ps`,
   `sudo docker-compose -p ronin-rush logs --tail 100 api`.
