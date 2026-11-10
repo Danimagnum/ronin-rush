@@ -3,9 +3,9 @@
 #   sudo sh /volume1/docker/ronin-rush/init.sh
 . "$(dirname "$0")/lib.sh"
 need_root
-mkdir -p data/postgres data/redis data/redpanda releases backups
-# Redpanda runs as uid 101 inside its image.
-chown 101:101 data/redpanda
+mkdir -p data/postgres data/redis data/kafka releases backups
+# The Kafka image runs as uid 1000 (appuser).
+chown 1000:1000 data/kafka
 # Your SSH user can upload release bundles without sudo.
 [ -n "${SUDO_USER:-}" ] && chown "$SUDO_USER" releases
 rnd() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }

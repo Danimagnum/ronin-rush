@@ -1,3 +1,5 @@
+# NOTE: does not work with the current `platform-staging` stack: its Kafka listens on 127.0.0.1
+# inside a shared network namespace. Kept for stacks that expose a normal broker on a bridge network.
 # Optional override: publish to the Kafka of an existing platform stack on the same NAS instead
 # of running our own broker. Joins that stack's network; nothing else is shared.
 #   sudo docker-compose -p ronin-rush -f docker-compose.yml -f docker-compose.platform-kafka.yml up -d

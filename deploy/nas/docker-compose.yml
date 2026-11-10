@@ -84,22 +84,33 @@ services:
       web: { condition: service_healthy }
     logging: *logging
 
-  # Own Kafka-compatible broker, only with `--profile kafka` (≈ 600 MB). Set KAFKA_BROKERS=redpanda:9092.
-  redpanda:
-    image: redpandadata/redpanda:v24.2.7
+  # Own single-node Kafka (KRaft), only with `--profile kafka` (≈ 600 MB). Set KAFKA_BROKERS=kafka:9092.
+  # Same image the platform stack already uses on this NAS (apache/kafka 3.9.1), so nothing new to pull.
+  kafka:
+    image: apache/kafka:3.9.1
     profiles: ["kafka"]
     restart: unless-stopped
-    command:
-      - redpanda
-      - start
-      - --mode=dev-container
-      - --smp=1
-      - --memory=400M
-      - --reserve-memory=0M
-      - --overprovisioned
-      - --default-log-level=warn
-      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
-    volumes: ["./data/redpanda:/var/lib/redpanda/data"]
-    mem_limit: 600m
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_LOG_RETENTION_HOURS: "48"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms192m -Xmx384m
+    volumes: ["./data/kafka:/var/lib/kafka/data"]
+    mem_limit: 640m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
     logging: *logging

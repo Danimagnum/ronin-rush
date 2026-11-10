@@ -23,7 +23,7 @@ set_tag() {
 }
 kafka_profile() {
   # Start the bundled broker only when .env points at it.
-  if grep -q '^KAFKA_BROKERS=redpanda:9092' .env; then echo "--profile kafka"; fi
+  if grep -q '^KAFKA_BROKERS=kafka:9092' .env; then echo "--profile kafka"; fi
 }
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

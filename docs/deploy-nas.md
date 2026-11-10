@@ -12,7 +12,7 @@ ports. Other stacks on the NAS (SpotKick, platform-staging) are not touched.
 | Compose project | `ronin-rush` (file format **2.4**: `mem_limit`, health conditions, profiles; no newer syntax) |
 | Public URL | `https://magnum-play.tail55a5b1.ts.net:10000` |
 | Local ports | `127.0.0.1:3310` → nginx (web + `/api` + `/socket.io`) · `127.0.0.1:3311` → API (diagnostics only) |
-| Not exposed | Postgres, Redis, Redpanda (no published ports), DSM, SSH |
+| Not exposed | Postgres, Redis, Kafka (no published ports), DSM, SSH |
 
 ```mermaid
 flowchart LR
@@ -23,12 +23,12 @@ flowchart LR
     N --> A[api]
     A --> P[(postgres)]
     A --> R[(redis)]
-    A -. "optional" .-> K[[redpanda / platform Kafka]]
+    A -. "optional" .-> K[[own Kafka]]
   end
 ```
 
 Memory limits: postgres 256 MB, redis 64 MB, api 384 MB, web 192 MB, proxy 64 MB. Real use
-is about 350–400 MB. The optional own Redpanda adds a 600 MB cap.
+is about 350–400 MB. The optional own Kafka adds a 640 MB cap.
 
 ## Files
 
@@ -111,8 +111,15 @@ Three modes, chosen in `.env`:
 | Mode | `.env` | Extra RAM |
 |---|---|---|
 | Dry run | `KAFKA_BROKERS=` | 0. The outbox is drained and shown, but nothing is sent |
-| Own broker | `KAFKA_BROKERS=redpanda:9092` (scripts add `--profile kafka`) | ≤ 600 MB |
-| Platform broker | `KAFKA_BROKERS=<broker>:9092`, `PLATFORM_KAFKA=true`, `PLATFORM_NETWORK=<network>` | 0 |
+| Own broker | `KAFKA_BROKERS=kafka:9092` (scripts add `--profile kafka`) | ≤ 640 MB |
+| Platform broker | `KAFKA_BROKERS=<broker>:9092`, `PLATFORM_KAFKA=true`, `PLATFORM_NETWORK=<network>` | 0. **Not usable with the current `platform-staging` stack**, see below |
+
+**Why the platform broker is not used here.** On this NAS the `platform-staging` stack runs its
+containers in one shared network namespace (they all sit behind the Redis container) and its Kafka
+listens on `127.0.0.1:19092` only. That address is reachable from inside that namespace, not from
+another compose project. Joining it would mean changing the other stack or attaching to its
+namespace, which would make Ronin Rush depend on it. The own broker uses the same
+`apache/kafka:3.9.1` image already on the NAS, so there is nothing new to download.
 
 In the Kafka modes the API also consumes its own topics with a consumer group. The System view
 shows topic, partition, offset, lag and the delay from database commit to consumption. If the
