@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Ronin Rush API: round loop leader, wallet ledger, real-time gateway.",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "nest start --watch",

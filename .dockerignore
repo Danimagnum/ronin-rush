@@ -1,0 +1,15 @@
+**/node_modules
+**/.next
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.sync
+*.zip
+e2e/test-results
+e2e/playwright-report
+coverage
+deploy/nas/.env
+releases

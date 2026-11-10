@@ -1,0 +1,82 @@
+# One command for the whole stack on a developer machine:
+#   docker compose up --build        → http://localhost:8080
+# Two API replicas behind nginx (Redis lease picks the leader; the other relays), Postgres,
+# Redis and Redpanda (Kafka API). Play money only.
+name: ronin-rush-local
+
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: "3001"
+  DATABASE_URL: postgres://ronin:ronin@postgres:5432/ronin
+  REDIS_URL: redis://redis:6379/0
+  REDIS_NAMESPACE: ronin
+  JWT_SECRET: local-compose-only-not-a-secret
+  KAFKA_BROKERS: redpanda:9092
+  CHAIN_LENGTH: "100000"
+  BOTS_COUNT: "12"
+  CORS_ORIGIN: http://localhost:8080
+  SENTRY_DSN: ${SENTRY_DSN:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ronin
+      POSTGRES_PASSWORD: ronin
+      POSTGRES_DB: ronin
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ronin -d ronin"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --default-log-level=warn
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      retries: 30
+
+  api:
+    build: { context: ., target: api }
+    image: ronin-rush-api:local
+    deploy: { replicas: 2 }
+    environment: *api-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+
+  web:
+    build: { context: ., target: web, args: { NEXT_PUBLIC_API_URL: "" } }
+    image: ronin-rush-web:local
+
+  proxy:
+    build: { context: ., target: proxy }
+    image: ronin-rush-proxy:local
+    environment:
+      FRAME_ANCESTORS: http://localhost:8081
+    ports: ["8080:8080"]
+    depends_on:
+      api: { condition: service_healthy }
+      web: { condition: service_healthy }
+
+volumes:
+  pgdata:
