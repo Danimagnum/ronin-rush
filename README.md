@@ -193,7 +193,9 @@ Domain events are versioned: `ronin.round.started.v1`, `ronin.bet.placed.v1`,
 `ronin.bet.cashed_out.v1`, `ronin.round.crashed.v1`, `ronin.round.settled.v1` (and
 `system.health.reported.v1` in platform mode).
 
-They are published through a **transactional outbox**. The event row is inserted in the same
+Every message uses the platform envelope (`id` UUID, `type`, `version`, `occurredAt`,
+`source: ronin-rush`, `correlationId`, `data`) from `@danigil/platform-contracts`. They are
+published through a **transactional outbox**. The event row is inserted in the same
 Postgres transaction as the ledger change, and a relay on every instance publishes pending rows
 (`FOR UPDATE SKIP LOCKED`, at-least-once, stable `event-id` header for dedupe). There can't be a
 paid cash-out without its event, or an event for a bet that never happened. If Kafka is down,
@@ -241,7 +243,7 @@ pnpm dev:web                                       # http://localhost:3000
 | `BETTING_MS` / `RESULT_MS` | `8000` / `3000` | Phase durations |
 | `BOTS_COUNT` | `12` | Bots that bet and cash out so the table is never empty |
 | `KAFKA_BROKERS` | empty | Comma-separated brokers; empty = outbox dry-run |
-| `PLATFORM_MODE` | `false` | `true` = authenticate with platform-core JWTs (RS256) and report health events |
+| `PLATFORM_MODE` | `false` | `true` = run as a platform service: Core JWTs via JWKS, stakes as Core wallet holds (responsible-gaming limits enforced there), health events. See [`docs/platform-mode.md`](docs/platform-mode.md) |
 | `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | empty | Optional error tracking (the browser SDK loads lazily, only when set) |
 
 **Monorepo layout:**
