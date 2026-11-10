@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ronin-rush
+description: Ronin Rush — live shared-round crash game (play money). API replicas behind an ingress, Next.js web.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [game, realtime, socket.io, nestjs, nextjs]

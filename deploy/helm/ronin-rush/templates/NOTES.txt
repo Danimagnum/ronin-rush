@@ -1,0 +1,5 @@
+Ronin Rush {{ .Chart.AppVersion }} — play money only.
+{{- if .Values.ingress.enabled }}
+Open: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- end }}
+Leader:  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/component=api -o name | xargs -I{} kubectl -n {{ .Release.Namespace }} exec {} -- node -e "fetch('http://127.0.0.1:{{ .Values.api.port }}/health').then(r=>r.json()).then(j=>console.log(j.instanceId,j.leader))"

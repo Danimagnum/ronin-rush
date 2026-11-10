@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ronin.fullname" . }}-web
+  labels: {{- include "ronin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: {{- include "ronin.selector" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels: {{- include "ronin.selector" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: web
+          # Built with an empty NEXT_PUBLIC_API_URL: the browser calls /api and /socket.io on the ingress host.
+          image: {{ include "ronin.image" (dict "root" . "component" "web") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: {{ .Values.web.port }} }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ronin.fullname" . }}-web
+  labels: {{- include "ronin.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "ronin.selector" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  ports:
+    - { name: http, port: {{ .Values.web.port }}, targetPort: http }

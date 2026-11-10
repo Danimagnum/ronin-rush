@@ -1,0 +1,65 @@
+# Postgres, Redis and Kafka are external (managed services or their own charts); this chart runs the app.
+image:
+  registry: ghcr.io/OWNER
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+api:
+  replicas: 2        # one leader runs the round loop (Redis lease); the rest relay commands and fan out events
+  port: 3001
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { memory: 384Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  env:
+    REDIS_NAMESPACE: ronin
+    BOTS_COUNT: "12"
+    CHAIN_LENGTH: "100000"
+    KAFKA_CLIENT_ID: ronin-rush-api
+    DB_POOL_SIZE: "10"
+  podAnnotations: {}
+
+web:
+  replicas: 2
+  port: 3000
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+# Connection settings. Put secrets in an existing Secret (recommended) or let the chart create one.
+config:
+  redisUrl: redis://redis-master:6379/0
+  kafkaBrokers: ""          # e.g. kafka:9092; empty = outbox dry-run
+  corsOrigin: https://ronin.example.com
+  sentryEnvironment: production
+secrets:
+  existingSecret: ""        # must contain DATABASE_URL, JWT_SECRET (and optionally SENTRY_DSN)
+  databaseUrl: ""
+  jwtSecret: ""
+  sentryDsn: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ronin.example.com
+  tls:
+    enabled: true
+    secretName: ronin-rush-tls
+  annotations:
+    # WebSockets stay open for the whole session; long-polling fallbacks need stickiness.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ronin-route
+    # Only the portfolio may embed the game.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu";
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
