@@ -157,8 +157,10 @@ export type CommandError = z.infer<typeof CommandError>;
 export const SOCKET_EVENTS = {
   /** server -> client, once on connect */
   hello: 'hello',
-  /** server -> client broadcast: every RoundEvent */
+  /** server -> client broadcast: a phase change (sent immediately) */
   roundEvent: 'round:event',
+  /** server -> client broadcast: bets and cash-outs, batched every ~100 ms (RoundEvent[]) */
+  roundBatch: 'round:batch',
   /** server -> client (own room): wallet balance after a money movement */
   balance: 'balance',
   /** server -> client (room "system"): live metrics for the System view */

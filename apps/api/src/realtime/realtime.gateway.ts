@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { CashoutCommand, PlaceBetCommand, SOCKET_EVENTS, TimePing, type CommandError, type InstanceStatus } from '@ronin/shared';
+import { CashoutCommand, PlaceBetCommand, SOCKET_EVENTS, TimePing, type CommandError, type InstanceStatus, type RoundEvent } from '@ronin/shared';
 import type Redis from 'ioredis';
 import { Server, type Socket } from 'socket.io';
 import { AuthService, type Principal } from '../auth/auth.service';
@@ -11,7 +11,6 @@ import { CLOCK, ENV, REDIS } from '../config/tokens';
 import { EventHub } from '../round/event-hub';
 import { RoundRunner } from '../round/round-runner.service';
 import type { BetResult } from '../round/round-engine';
-import { PostgresLedger } from '../wallet/postgres-ledger';
 import { ReadModel } from './read-model.service';
 
 type Ack = (payload: unknown) => void;
@@ -52,6 +51,8 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
   private pub!: Redis;
   private sub!: Redis;
   private heartbeat: NodeJS.Timeout | null = null;
+  private batch: RoundEvent[] = [];
+  private batchTimer: NodeJS.Timeout | null = null;
   localConnections = 0;
 
   constructor(
@@ -63,7 +64,6 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     private readonly runner: RoundRunner,
     private readonly hub: EventHub,
     private readonly readModel: ReadModel,
-    private readonly ledger: PostgresLedger,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -84,12 +84,20 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     });
     this.io.on('connection', (socket) => this.onConnection(socket));
 
-    // Leader-side fan-out: one emit, delivered cluster-wide by the adapter.
+    // Leader-side fan-out, delivered cluster-wide by the adapter. Phase changes go out at once;
+    // bets and cash-outs are batched (≤100 ms), turning N events × M sockets into a handful of
+    // messages per second per socket. A phase change flushes the batch first to keep ordering.
     this.hub.subscribe((e) => {
       if (!this.runner.isLeader) return;
+      if (e.type === 'bet.placed' || e.type === 'bet.cashed_out') {
+        this.batch.push(e);
+        this.batchTimer ??= setTimeout(() => this.flushBatch(), 100);
+        return;
+      }
+      this.flushBatch();
       this.io.emit(SOCKET_EVENTS.roundEvent, e);
-      if ((e.type === 'bet.placed' || e.type === 'bet.cashed_out') && !e.bet.isBot) void this.pushBalance(e.bet.userId);
     });
+    this.runner.onBalance((userId, balance) => this.io.to(`user:${userId}`).emit(SOCKET_EVENTS.balance, { balance }));
 
     // Per-instance heartbeat: feeds the System view (connections, clock alignment, relay traffic).
     this.heartbeat = setInterval(() => {
@@ -115,9 +123,13 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     this.sub?.disconnect();
   }
 
-  private async pushBalance(userId: string): Promise<void> {
-    const balance = await this.ledger.balanceOf(userId);
-    this.io.to(`user:${userId}`).emit(SOCKET_EVENTS.balance, { balance });
+  private flushBatch(): void {
+    if (this.batchTimer) clearTimeout(this.batchTimer);
+    this.batchTimer = null;
+    if (!this.batch.length) return;
+    const events = this.batch;
+    this.batch = [];
+    this.io.emit(SOCKET_EVENTS.roundBatch, events);
   }
 
   private onConnection(socket: Socket): void {

@@ -128,6 +128,7 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
 
     sock = io(`http://127.0.0.1:${relayPort}`, { transports: ['websocket'], auth: { token } });
     sock.on(SOCKET_EVENTS.roundEvent, (e: RoundEvent) => events.push(e));
+    sock.on(SOCKET_EVENTS.roundBatch, (batch: RoundEvent[]) => events.push(...batch));
     sock.on(SOCKET_EVENTS.balance, (b: { balance: number }) => balances.push(b.balance));
     const hello = await new Promise<ServerHello>((resolve) => sock.once(SOCKET_EVENTS.hello, resolve));
     expect(hello.instanceId).toBe('e2e-b');

@@ -16,7 +16,8 @@ export function connect(token: string | null): void {
   const store = useGame.getState();
   store.set({ connection: 'connecting' });
 
-  socket = io(API_URL, { transports: ['websocket', 'polling'], auth: token ? { token } : {}, reconnectionDelayMax: 4_000 });
+  const opts = { transports: ['websocket', 'polling'], auth: token ? { token } : {}, reconnectionDelayMax: 4_000 };
+  socket = API_URL ? io(API_URL, opts) : io(opts); // empty URL: same origin, through the reverse proxy
   socket.on('connect', () => {
     useGame.getState().set({ connection: 'online' });
     // Re-join the metrics room after a reconnect if the System view is open.
@@ -27,6 +28,10 @@ export function connect(token: string | null): void {
   socket.on('disconnect', () => useGame.getState().set({ connection: 'offline' }));
   socket.on(SOCKET_EVENTS.hello, (h: ServerHello) => useGame.getState().applyHello(h));
   socket.on(SOCKET_EVENTS.roundEvent, (e: RoundEvent) => useGame.getState().applyEvent(e));
+  socket.on(SOCKET_EVENTS.roundBatch, (events: RoundEvent[]) => {
+    const { applyEvent } = useGame.getState();
+    for (const e of events) applyEvent(e);
+  });
   socket.on(SOCKET_EVENTS.balance, (b: { balance: number }) => useGame.getState().setBalance(b.balance));
 }
 
