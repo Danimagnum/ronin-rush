@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Typecheck and tests (Postgres + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: ronin, POSTGRES_PASSWORD: ronin, POSTGRES_DB: ronin_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ronin" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://ronin:ronin@localhost:5432/ronin_test
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      # Includes the 1,000,000-round fairness distribution test and the 500-concurrent-op ledger test.
+      - run: pnpm test
+
+  e2e:
+    name: Playwright (bet → cash out, late cash-out rejected, verify)
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: ronin, POSTGRES_PASSWORD: ronin, POSTGRES_DB: ronin }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ronin" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      E2E_DATABASE_URL: postgres://ronin:ronin@localhost:5432/ronin_e2e_web
+      E2E_REDIS_URL: redis://localhost:6379/4
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ronin/shared build && pnpm --filter @ronin/api build
+      - run: pnpm --filter @ronin/e2e exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: playwright-report, path: e2e/playwright-report, retention-days: 7 }
+
+  images:
+    name: Docker images (linux/amd64)
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        target: [api, web, proxy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ronin-rush-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: NEXT_PUBLIC_API_URL=
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:main
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  deploy-config:
+    name: Helm chart and Compose files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint + template
+        run: |
+          helm lint deploy/helm/ronin-rush --set secrets.databaseUrl=postgres://x --set secrets.jwtSecret=0123456789abcdef
+          helm template ronin deploy/helm/ronin-rush --set secrets.databaseUrl=postgres://x --set secrets.jwtSecret=0123456789abcdef > rendered.yaml
+          helm template ronin deploy/helm/ronin-rush --set secrets.existingSecret=ronin-secrets --set api.autoscaling.enabled=true >> rendered.yaml
+      - name: kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary rendered.yaml
+      - name: docker compose config
+        run: |
+          docker compose -f docker-compose.yml config -q
+          cp deploy/nas/env.example deploy/nas/.env
+          sed -i 's/^RONIN_TAG=$/RONIN_TAG=ci/; s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci/' deploy/nas/.env
+          docker compose -f deploy/nas/docker-compose.yml --profile kafka config -q
+      - name: shell scripts
+        run: for f in deploy/nas/*.sh deploy/release.sh; do bash -n "$f"; done
