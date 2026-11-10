@@ -16,6 +16,7 @@
     "@nestjs/core": "^11.0.10",
     "@nestjs/platform-express": "^11.0.10",
     "@ronin/shared": "workspace:*",
+    "@sentry/nestjs": "^9.10.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "argon2": "^0.41.1",
     "ioredis": "^5.4.2",

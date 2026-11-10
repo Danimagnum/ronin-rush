@@ -12,6 +12,7 @@
     "@fontsource/shippori-mincho-b1": "^5.2.0",
     "@fontsource/zen-kaku-gothic-new": "^5.2.0",
     "@ronin/shared": "workspace:*",
+    "@sentry/nextjs": "^9.10.0",
     "next": "15.5.4",
     "pixi.js": "8.13.2",
     "react": "19.1.1",
