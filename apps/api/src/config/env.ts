@@ -51,6 +51,12 @@ export const EnvSchema = z.object({
   /** Comma-separated brokers; empty = outbox relay runs in dry-run mode (marks + taps, no Kafka). */
   KAFKA_BROKERS: z.string().default(''),
   KAFKA_CLIENT_ID: z.string().default('ronin-rush-api'),
+  /** Read the events back with a consumer group and show offsets in the System view. */
+  KAFKA_CONSUMER_ENABLED: z
+    .enum(['true', 'false', '1', '0'])
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+  KAFKA_PARTITIONS: z.coerce.number().int().positive().default(3),
 
   BOTS_COUNT: z.coerce.number().int().min(0).max(100).default(12),
   CORS_ORIGIN: z.string().default('*'),

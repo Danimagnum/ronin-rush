@@ -118,6 +118,30 @@ export function SystemView() {
                   </li>
                 ))}
               </ul>
+              {m.kafka.consumer ? (
+                <div className="mt-3 border-t border-ai-700 pt-2">
+                  <p className="text-xs text-mist">
+                    Read back by consumer group <span className="text-washi/90">{m.kafka.consumer.groupId}</span>
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-4">
+                    <Stat label="Consumed" value={String(m.kafka.consumer.consumed)} />
+                    <Stat label="Consumer lag" value={m.kafka.consumer.lag === null ? '—' : String(m.kafka.consumer.lag)} />
+                  </div>
+                  <ul className="mt-2 grid gap-1 text-xs">
+                    {m.kafka.consumer.recent.map((e) => (
+                      <li
+                        key={`${e.topic}-${e.partition}-${e.offset}`}
+                        className="grid grid-cols-[1fr_auto] gap-2 border-t border-ai-700/60 pt-1"
+                      >
+                        <span className="truncate text-washi/90">{e.topic}</span>
+                        <span className="tabular text-mist">
+                          p{e.partition} @{e.offset} · {e.endToEndMs} ms
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </>
           ) : null}
         </Tile>

@@ -1,10 +1,16 @@
 import { Controller, Get, Inject, Injectable, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
-import { SOCKET_EVENTS, type KafkaTapEntry, type LedgerEntryView, type RoundEvent, type SystemMetrics } from '@ronin/shared';
+import { SOCKET_EVENTS, type KafkaConsumedEntry, type KafkaTapEntry, type LedgerEntryView, type RoundEvent, type SystemMetrics } from '@ronin/shared';
 import type Redis from 'ioredis';
 import type { DataSource } from 'typeorm';
 import type { Clock } from '../clock/clock';
 import type { Env } from '../config/env';
 import { CLOCK, DATA_SOURCE, ENV, REDIS } from '../config/tokens';
+import {
+  KAFKA_CONSUMED_COUNT_KEY,
+  KAFKA_CONSUMED_KEY,
+  KAFKA_LAG_KEY,
+  KafkaTapConsumer,
+} from '../events/kafka-tap-consumer.service';
 import { KAFKA_TAP_KEY, OutboxRelay } from '../events/outbox-relay.service';
 import { EventHub } from '../round/event-hub';
 import { RoundRunner } from '../round/round-runner.service';
@@ -33,6 +39,7 @@ export class SystemMetricsService implements OnApplicationBootstrap, OnApplicati
     private readonly hub: EventHub,
     private readonly gateway: RealtimeGateway,
     private readonly relay: OutboxRelay,
+    private readonly tap: KafkaTapConsumer,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -62,10 +69,11 @@ export class SystemMetricsService implements OnApplicationBootstrap, OnApplicati
       while (xs.length && xs[0]! < now - RATE_WINDOW_MS) xs.shift();
       return Math.round((xs.length / (RATE_WINDOW_MS / 1000)) * 10) / 10;
     };
-    const [instances, tapRaw, ledger] = await Promise.all([
+    const [instances, tapRaw, ledger, consumer] = await Promise.all([
       this.gateway.instances(),
       this.redis.lrange(KAFKA_TAP_KEY, 0, 11),
       this.ledgerStats(),
+      this.consumerStats(),
     ]);
     const engine = this.runner.engine.metrics();
     const snap = this.runner.engine.snapshot();
@@ -91,8 +99,23 @@ export class SystemMetricsService implements OnApplicationBootstrap, OnApplicati
       },
       drain: { lastMs: this.runner.drain?.lastDrainMs ?? 0, timeouts: this.runner.drain?.timeouts ?? 0 },
       bus: { consumed: this.runner.bus.consumed },
-      kafka: { mode: this.relay.mode, published: this.relay.published, recent },
+      kafka: { mode: this.relay.mode, published: this.relay.published, recent, consumer },
       ledger,
+    };
+  }
+
+  private async consumerStats(): Promise<SystemMetrics['kafka']['consumer']> {
+    if (!this.tap.enabled) return null;
+    const [raw, count, lag] = await Promise.all([
+      this.redis.lrange(KAFKA_CONSUMED_KEY, 0, 9),
+      this.redis.get(KAFKA_CONSUMED_COUNT_KEY),
+      this.redis.get(KAFKA_LAG_KEY),
+    ]);
+    return {
+      groupId: this.tap.groupId,
+      consumed: Number(count ?? 0),
+      lag: lag === null ? null : Number(lag),
+      recent: raw.map((r) => JSON.parse(r) as KafkaConsumedEntry),
     };
   }
 
