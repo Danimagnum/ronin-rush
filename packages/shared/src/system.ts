@@ -63,4 +63,6 @@ export interface SystemMetrics {
     consumer: { groupId: string; consumed: number; lag: number | null; recent: KafkaConsumedEntry[] } | null;
   };
   ledger: { transactions: number; postings: number; sumOfPostings: number; recent: LedgerEntryView[] };
+  /** PLATFORM_MODE only: stakes held in platform-core and captures waiting to be settled there. */
+  platform: { pendingSettlements: number; settled: number; coreCalls: number; coreFailures: number; coreP95Ms: number } | null;
 }

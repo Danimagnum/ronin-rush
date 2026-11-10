@@ -4,9 +4,10 @@ import type Redis from 'ioredis';
 import type { DataSource } from 'typeorm';
 import type { ReferenceAlignedClock } from '../clock/clock';
 import type { Env } from '../config/env';
-import { CLOCK, DATA_SOURCE, ENV, REDIS } from '../config/tokens';
+import { CLOCK, DATA_SOURCE, ENV, PLATFORM_LEDGER, REDIS } from '../config/tokens';
 import { currentFence } from '../db/fence';
 import { LeaderElector } from '../leader/leader-elector';
+import type { PlatformLedger } from '../platform/platform-ledger';
 import { PostgresLedger } from '../wallet/postgres-ledger';
 import { CommandBus } from '../realtime/command-bus';
 import { RedisDrainBarrier } from '../realtime/redis-drain-barrier';
@@ -30,6 +31,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
   drain!: RedisDrainBarrier;
   chain!: ActiveChain;
   private shuttingDown = false;
+  private settleTimer: NodeJS.Timeout | null = null;
   private readonly balanceListeners = new Set<(userId: string, balance: number) => void>();
 
   /** Wallet balance changes reported by the ledger itself (humans only). */
@@ -45,6 +47,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     private readonly ledger: PostgresLedger,
     private readonly hub: EventHub,
+    @Inject(PLATFORM_LEDGER) readonly platform: PlatformLedger | null,
   ) {
     this.elector = new LeaderElector(redis, {
       instanceId: env.INSTANCE_ID,
@@ -79,7 +82,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
     this.engine = new RoundEngine({
       clock: this.clock,
       seeds: new PostgresSeedSource(this.ds, this.chain),
-      ledger: this.ledger,
+      ledger: this.platform ?? this.ledger,
       store: new PostgresRoundStore(this.ds, this.chain.chainId),
       drain: (this.drain = new RedisDrainBarrier(this.bus, (lagging) =>
         this.log.warn(`drain timeout: settling without waiting for ${lagging.join(', ')}`),
@@ -124,6 +127,14 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
         void this.bus.stopConsuming();
       }
     });
+    if (this.platform) {
+      // Platform captures: retried on every instance (rows are leased), pushed to the owner's sockets.
+      this.platform.onBalance = (userId, balance) => {
+        for (const l of this.balanceListeners) l(userId, balance);
+      };
+      this.settleTimer = setInterval(() => void this.platform!.tick().catch(() => undefined), 1_000);
+      this.log.log(`PLATFORM_MODE: players' stakes are platform-core holds (${env.PLATFORM_CORE_URL})`);
+    }
     await this.bus.start();
     await this.elector.start();
     if (!this.elector.isLeader) this.log.log('another instance is leader; running as relay');
@@ -131,6 +142,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
 
   async onApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
+    if (this.settleTimer) clearInterval(this.settleTimer);
     this.engine?.stop();
     await this.engine?.idle();
     this.log.log('shutting down: releasing leadership');

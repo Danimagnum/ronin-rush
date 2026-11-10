@@ -30,6 +30,8 @@ export interface StakeDebit {
   placedAt: number;
   idempotencyKey: string;
   fencingToken: number;
+  /** PLATFORM_MODE: the platform-core hold already reserving this stake (no local postings). */
+  externalHoldId?: string;
 }
 
 export interface CashoutCredit {
@@ -51,7 +53,8 @@ export interface LostStake {
   amount: number;
 }
 
-export type DebitResult = { ok: true; balance: number | null } | { ok: false; reason: 'INSUFFICIENT_FUNDS' };
+export type DebitFailure = 'INSUFFICIENT_FUNDS' | 'RESPONSIBLE_GAMING_BLOCKED' | 'WALLET_UNAVAILABLE';
+export type DebitResult = { ok: true; balance: number | null } | { ok: false; reason: DebitFailure };
 
 /**
  * Double-entry wallet operations. Every call is idempotent on its idempotencyKey and commits

@@ -102,18 +102,22 @@ export class PostgresLedger implements BetLedger {
       if (!txId) return { ok: true, balance: null }; // already applied by an earlier attempt
       await assertFence(q, op.fencingToken);
 
-      const account = await this.lockUserAccount(q, op.userId);
-      if (account.balance < op.amount) throw new Rollback<DebitResult>({ ok: false, reason: 'INSUFFICIENT_FUNDS' });
-
-      const [row] = await updateReturning<{ balance: string }>(q, `UPDATE accounts SET balance = balance - $2 WHERE id = $1 RETURNING balance`, [account.id, op.amount]);
-      await this.post(q, txId, [
-        [account.id, -op.amount],
-        [this.sys.escrow, op.amount],
-      ]);
+      let balance: number | null = null;
+      if (!op.externalHoldId) {
+        const account = await this.lockUserAccount(q, op.userId);
+        if (account.balance < op.amount) throw new Rollback<DebitResult>({ ok: false, reason: 'INSUFFICIENT_FUNDS' });
+        const [row] = await updateReturning<{ balance: string }>(q, `UPDATE accounts SET balance = balance - $2 WHERE id = $1 RETURNING balance`, [account.id, op.amount]);
+        await this.post(q, txId, [
+          [account.id, -op.amount],
+          [this.sys.escrow, op.amount],
+        ]);
+        balance = num(row!.balance);
+      }
+      // With an external hold the money is already reserved in platform-core: record the bet only.
       await q.query(
-        `INSERT INTO bets (id, round_id, user_id, amount, auto_x100, client_key, placed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [op.betId, op.roundId, op.userId, op.amount, op.autoX100, op.clientKey, op.placedAt],
+        `INSERT INTO bets (id, round_id, user_id, amount, auto_x100, client_key, placed_at, external_hold_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [op.betId, op.roundId, op.userId, op.amount, op.autoX100, op.clientKey, op.placedAt, op.externalHoldId ?? null],
       );
       await appendOutbox(q, TOPICS.betPlaced, op.roundId, {
         betId: op.betId,
@@ -123,7 +127,7 @@ export class PostgresLedger implements BetLedger {
         autoX100: op.autoX100,
         placedAt: op.placedAt,
       });
-      return { ok: true, balance: num(row!.balance) };
+      return { ok: true, balance };
     });
   }
 
@@ -133,14 +137,22 @@ export class PostgresLedger implements BetLedger {
       if (!txId) return null;
       await assertFence(q, op.fencingToken);
 
-      const account = await this.lockUserAccount(q, op.userId);
-      const [row] = await updateReturning<{ balance: string }>(q, `UPDATE accounts SET balance = balance + $2 WHERE id = $1 RETURNING balance`, [account.id, op.payout]);
-      const profit = op.payout - op.stake;
-      await this.post(q, txId, [
-        [this.sys.escrow, -op.stake],
-        [this.sys.house, -profit],
-        [account.id, op.payout],
-      ]);
+      let balance: number | null = null;
+      const external = await this.externalHold(q, op.betId);
+      if (external) {
+        // Platform-backed stake: the decision commits here, the money moves in Core via the worker.
+        await this.queueSettlement(q, op.betId, external, op.payout);
+      } else {
+        const account = await this.lockUserAccount(q, op.userId);
+        const [row] = await updateReturning<{ balance: string }>(q, `UPDATE accounts SET balance = balance + $2 WHERE id = $1 RETURNING balance`, [account.id, op.payout]);
+        const profit = op.payout - op.stake;
+        await this.post(q, txId, [
+          [this.sys.escrow, -op.stake],
+          [this.sys.house, -profit],
+          [account.id, op.payout],
+        ]);
+        balance = num(row!.balance);
+      }
       const res = await q.query(
         `UPDATE bets SET status = 'CASHED_OUT', cashout_x100 = $2, payout = $3, auto_cashout = $4, cashed_at = $5
          WHERE id = $1 AND status = 'ACTIVE'`,
@@ -156,7 +168,7 @@ export class PostgresLedger implements BetLedger {
         auto: op.auto,
         cashedAt: op.cashedAt,
       });
-      return num(row!.balance);
+      return balance;
     });
   }
 
@@ -166,11 +178,21 @@ export class PostgresLedger implements BetLedger {
       const txId = await this.claimKey(q, 'ROUND_LOSS', idempotencyKey, roundId, null);
       if (!txId) return;
       await assertFence(q, fencingToken);
-      const total = lost.reduce((s, l) => s + l.amount, 0);
-      await this.post(q, txId, [
-        [this.sys.escrow, -total],
-        [this.sys.house, total],
-      ]);
+      const externals: Array<{ id: string; external_hold_id: string; external_id: string }> = await q.query(
+        `SELECT b.id, b.external_hold_id, u.external_id FROM bets b JOIN users u ON u.id = b.user_id
+         WHERE b.id = ANY($1::uuid[]) AND b.external_hold_id IS NOT NULL`,
+        [lost.map((l) => l.betId)],
+      );
+      const external = new Set(externals.map((e) => e.id));
+      const total = lost.filter((l) => !external.has(l.betId)).reduce((s, l) => s + l.amount, 0);
+      if (total > 0) {
+        await this.post(q, txId, [
+          [this.sys.escrow, -total],
+          [this.sys.house, total],
+        ]);
+      }
+      // Lost platform stakes: capture into Core's house with no payout.
+      for (const e of externals) await this.queueSettlement(q, e.id, { holdId: e.external_hold_id, externalUser: e.external_id }, 0);
       const res = await q.query(`UPDATE bets SET status = 'LOST', payout = 0 WHERE id = ANY($1::uuid[]) AND status = 'ACTIVE'`, [
         lost.map((l) => l.betId),
       ]);
@@ -228,6 +250,22 @@ export class PostgresLedger implements BetLedger {
       [type, key, roundId, betId],
     );
     return rows[0]?.id ?? null;
+  }
+
+  private async externalHold(q: QueryRunner, betId: string): Promise<{ holdId: string; externalUser: string } | null> {
+    const [row] = await q.query(
+      `SELECT b.external_hold_id, u.external_id FROM bets b JOIN users u ON u.id = b.user_id WHERE b.id = $1`,
+      [betId],
+    );
+    return row?.external_hold_id ? { holdId: row.external_hold_id, externalUser: row.external_id } : null;
+  }
+
+  private async queueSettlement(q: QueryRunner, betId: string, hold: { holdId: string; externalUser: string }, payout: number): Promise<void> {
+    await q.query(
+      `INSERT INTO platform_settlements (bet_id, hold_id, external_user, payout, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (bet_id) DO NOTHING`,
+      [betId, hold.holdId, hold.externalUser, payout, `ronin:capture:${betId}`],
+    );
   }
 
   private async lockUserAccount(q: QueryRunner, userId: string): Promise<{ id: string; balance: number }> {

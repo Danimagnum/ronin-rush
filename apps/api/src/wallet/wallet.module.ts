@@ -1,6 +1,10 @@
-import { Controller, Get, Global, Inject, Module } from '@nestjs/common';
+import { Controller, Get, Global, Inject, Logger, Module } from '@nestjs/common';
 import type { DataSource } from 'typeorm';
-import { DATA_SOURCE } from '../config/tokens';
+import type { Env } from '../config/env';
+import { DATA_SOURCE, ENV, PLATFORM_LEDGER } from '../config/tokens';
+import { Sentry } from '../instrument';
+import { CoreClient } from '../platform/core-client';
+import { PlatformLedger } from '../platform/platform-ledger';
 import { PostgresLedger } from './postgres-ledger';
 
 @Controller('api/ledger')
@@ -27,7 +31,29 @@ class LedgerController {
         return ledger;
       },
     },
+    {
+      // PLATFORM_MODE: players' money lives in platform-core; null otherwise.
+      provide: PLATFORM_LEDGER,
+      inject: [ENV, DATA_SOURCE, PostgresLedger],
+      useFactory: (env: Env, ds: DataSource, local: PostgresLedger): PlatformLedger | null => {
+        if (!env.PLATFORM_MODE) return null;
+        const log = new Logger('PlatformLedger');
+        const core = new CoreClient({
+          baseUrl: env.PLATFORM_CORE_URL!,
+          clientId: env.PLATFORM_CLIENT_ID!,
+          clientSecret: env.PLATFORM_CLIENT_SECRET!,
+          currency: env.PLATFORM_CURRENCY,
+        });
+        return new PlatformLedger(ds, local, core, {
+          houseAccountId: env.PLATFORM_HOUSE_ACCOUNT_ID!,
+          onError: (e) => {
+            log.warn((e as Error).message);
+            Sentry.captureException(e, { tags: { component: 'platform-ledger' } });
+          },
+        });
+      },
+    },
   ],
-  exports: [PostgresLedger],
+  exports: [PostgresLedger, PLATFORM_LEDGER],
 })
 export class WalletModule {}

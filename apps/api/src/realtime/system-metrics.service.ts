@@ -101,6 +101,19 @@ export class SystemMetricsService implements OnApplicationBootstrap, OnApplicati
       bus: { consumed: this.runner.bus.consumed },
       kafka: { mode: this.relay.mode, published: this.relay.published, recent, consumer },
       ledger,
+      platform: await this.platformStats(),
+    };
+  }
+
+  private async platformStats(): Promise<SystemMetrics['platform']> {
+    const p = this.runner.platform;
+    if (!p) return null;
+    return {
+      pendingSettlements: await p.pending().catch(() => -1),
+      settled: p.settled,
+      coreCalls: p.core.calls,
+      coreFailures: p.core.failures,
+      coreP95Ms: p.core.p95(),
     };
   }
 

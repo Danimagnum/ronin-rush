@@ -1,7 +1,8 @@
 import { DataSource } from 'typeorm';
 import { InitialSchema1762675200000 } from './migrations/1762675200000-InitialSchema';
+import { PlatformSettlements1762934400000 } from './migrations/1762934400000-PlatformSettlements';
 
-export const MIGRATIONS = [InitialSchema1762675200000];
+export const MIGRATIONS = [InitialSchema1762675200000, PlatformSettlements1762934400000];
 
 export function createDataSource(url: string, opts: { poolSize?: number; searchPath?: string } = {}): DataSource {
   return new DataSource({

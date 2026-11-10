@@ -141,6 +141,10 @@ export const CommandError = z.enum([
   'BETTING_CLOSED',
   'ALREADY_BET',
   'INSUFFICIENT_FUNDS',
+  /** PLATFORM_MODE: platform-core refused the stake (limits, exclusion, KYC). */
+  'RESPONSIBLE_GAMING_BLOCKED',
+  /** PLATFORM_MODE: the platform wallet could not be reached; nothing was charged. */
+  'WALLET_UNAVAILABLE',
   'NO_ACTIVE_BET',
   'NOT_RUNNING',
   'CASHOUT_AFTER_CRASH',

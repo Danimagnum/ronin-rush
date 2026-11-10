@@ -42,6 +42,15 @@ export const EnvSchema = z.object({
 
   PLATFORM_MODE: bool,
   PLATFORM_JWT_PUBLIC_KEY: z.string().optional(),
+  /** platform-core JWKS (preferred over a static key: follows key rotation). */
+  PLATFORM_JWKS_URL: z.string().url().optional(),
+  /** platform-core base URL for the wallet and responsible-gaming APIs. */
+  PLATFORM_CORE_URL: z.string().url().optional(),
+  PLATFORM_CLIENT_ID: z.string().optional(),
+  PLATFORM_CLIENT_SECRET: z.string().optional(),
+  /** Core house account (kind=house) that captured stakes settle into. */
+  PLATFORM_HOUSE_ACCOUNT_ID: z.string().uuid().optional(),
+  PLATFORM_CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
   PLATFORM_JWT_ISSUER: z.string().optional(),
   PLATFORM_JWT_AUDIENCE: z.string().optional(),
 
@@ -64,8 +73,13 @@ export const EnvSchema = z.object({
   if (env.NODE_ENV === 'production' && env.JWT_SECRET === 'dev-only-insecure-secret-change-me') {
     ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'must be set in production' });
   }
-  if (env.PLATFORM_MODE && !env.PLATFORM_JWT_PUBLIC_KEY) {
-    ctx.addIssue({ code: 'custom', path: ['PLATFORM_JWT_PUBLIC_KEY'], message: 'required when PLATFORM_MODE=true' });
+  if (env.PLATFORM_MODE) {
+    if (!env.PLATFORM_JWKS_URL && !env.PLATFORM_JWT_PUBLIC_KEY) {
+      ctx.addIssue({ code: 'custom', path: ['PLATFORM_JWKS_URL'], message: 'PLATFORM_JWKS_URL or PLATFORM_JWT_PUBLIC_KEY is required when PLATFORM_MODE=true' });
+    }
+    for (const k of ['PLATFORM_CORE_URL', 'PLATFORM_CLIENT_ID', 'PLATFORM_CLIENT_SECRET', 'PLATFORM_HOUSE_ACCOUNT_ID'] as const) {
+      if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: 'required when PLATFORM_MODE=true' });
+    }
   }
 });
 

@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpException, HttpStatus, Inject, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpException, HttpStatus, Inject, Post, Query } from '@nestjs/common';
 
 const tooMany = (msg: string) => new HttpException(msg, HttpStatus.TOO_MANY_REQUESTS);
 import type Redis from 'ioredis';
 import type { DataSource } from 'typeorm';
 import type { Env } from '../config/env';
-import { DATA_SOURCE, ENV, REDIS } from '../config/tokens';
+import { DATA_SOURCE, ENV, PLATFORM_LEDGER, REDIS } from '../config/tokens';
+import type { PlatformLedger } from '../platform/platform-ledger';
 import { PostgresLedger } from '../wallet/postgres-ledger';
 import { AuthService } from './auth.service';
 
@@ -37,12 +38,17 @@ export class MeController {
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(ENV) private readonly env: Env,
+    @Inject(PLATFORM_LEDGER) private readonly platform: PlatformLedger | null,
   ) {}
 
   @Get()
   async me(@Headers('authorization') authorization?: string) {
     const p = await this.auth.require(authorization);
-    return { id: p.userId, username: p.username, balance: await this.ledger.balanceOf(p.userId) };
+    return { id: p.userId, username: p.username, balance: await this.balanceOf(p.userId) };
+  }
+
+  private async balanceOf(userId: string): Promise<number> {
+    return (await this.platform?.balanceOf(userId)) ?? this.ledger.balanceOf(userId);
   }
 
   /** "My bets": newest first, with the round's crash point once it is public. */
@@ -74,6 +80,7 @@ export class MeController {
   @Post('refill')
   async refill(@Headers('authorization') authorization?: string) {
     const p = await this.auth.require(authorization);
+    if (this.env.PLATFORM_MODE) throw new BadRequestException('funds are managed in platform-core in PLATFORM_MODE');
     const balance = await this.ledger.balanceOf(p.userId);
     if (balance >= this.env.SIGNUP_GRANT_CENTS / 10) throw tooMany('balance is not low');
     const slot = Math.floor(Date.now() / 600_000);
