@@ -6,7 +6,8 @@ import { z } from 'zod';
 import type { Env } from '../config/env';
 import { DATA_SOURCE, ENV } from '../config/tokens';
 import { PostgresLedger } from '../wallet/postgres-ledger';
-import { JwtError, signHs256, verifyHs256, verifyRs256 } from './jwt';
+import { JwksCache } from '../platform/jwks';
+import { JwtError, jwtHeader, signHs256, verifyHs256, verifyRs256 } from './jwt';
 
 export interface Principal {
   userId: string;
@@ -25,11 +26,15 @@ export const Credentials = z.object({
  */
 @Injectable()
 export class AuthService {
+  private readonly jwks: JwksCache | null;
+
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     private readonly ledger: PostgresLedger,
-  ) {}
+  ) {
+    this.jwks = env.PLATFORM_JWKS_URL ? new JwksCache(env.PLATFORM_JWKS_URL) : null;
+  }
 
   async register(body: unknown) {
     this.ownUsersOnly();
@@ -95,17 +100,24 @@ export class AuthService {
   }
 
   private async fromPlatformToken(token: string): Promise<Principal> {
-    if (!this.env.PLATFORM_JWT_PUBLIC_KEY) throw new JwtError('PLATFORM_JWT_PUBLIC_KEY not configured');
-    const claims = verifyRs256(token, this.env.PLATFORM_JWT_PUBLIC_KEY.replace(/\\n/g, '\n'), {
+    // Core publishes rotating keys at its JWKS endpoint; a static PEM is the offline fallback.
+    const key = this.jwks
+      ? await this.jwks.key(jwtHeader(token).kid)
+      : this.env.PLATFORM_JWT_PUBLIC_KEY?.replace(/\\n/g, '\n');
+    if (!key) throw new JwtError('no platform signing key configured');
+    const claims = verifyRs256(token, key, {
       issuer: this.env.PLATFORM_JWT_ISSUER,
       audience: this.env.PLATFORM_JWT_AUDIENCE,
     });
+    // Machine tokens (client credentials) never act as players.
+    if (claims.kind !== undefined && claims.kind !== 'user') throw new JwtError('not a user token');
     const [row] = await this.ds.query(`SELECT id, username FROM users WHERE external_id = $1`, [claims.sub]);
     if (row) return { userId: row.id, username: row.username };
-    const username = String(claims.preferred_username ?? `p_${claims.sub.slice(0, 12)}`);
+    const email = typeof claims.email === 'string' ? claims.email : '';
+    const base = (email.split('@')[0] || `p_${claims.sub.slice(0, 8)}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 14);
     // Money lives in platform-core in this mode; the local account only mirrors bets (grant 0).
-    const u = await this.ledger.createUser({ username, externalId: claims.sub, grantCents: 0 });
-    return { userId: u.userId, username };
+    const u = await this.ledger.createUser({ username: `${base}_${claims.sub.slice(0, 4)}`, externalId: claims.sub, grantCents: 0 });
+    return { userId: u.userId, username: `${base}_${claims.sub.slice(0, 4)}` };
   }
 
   private ownUsersOnly(): void {

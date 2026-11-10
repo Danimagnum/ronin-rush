@@ -1,4 +1,4 @@
-import { createHmac, createVerify, timingSafeEqual } from 'node:crypto';
+import { createHmac, createVerify, timingSafeEqual, type KeyObject } from 'node:crypto';
 
 /**
  * Minimal JWT (RFC 7519) helpers on node:crypto — HS256 for our own sessions and RS256
@@ -67,9 +67,18 @@ export function verifyHs256(token: string, secret: string, now = Date.now()): Jw
   return checkClaims(payload, {}, now);
 }
 
+/** Unverified header, only to pick a key by `kid`; never trusted for the algorithm. */
+export function jwtHeader(token: string): { kid?: string; alg?: string } {
+  try {
+    return JSON.parse(fromB64url(split(token)[0]).toString('utf8'));
+  } catch {
+    throw new JwtError('malformed header');
+  }
+}
+
 export function verifyRs256(
   token: string,
-  publicKeyPem: string,
+  publicKeyPem: string | KeyObject,
   opts: { issuer?: string; audience?: string } = {},
   now = Date.now(),
 ): JwtClaims {
