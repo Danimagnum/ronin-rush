@@ -59,7 +59,8 @@ export type DebitResult = { ok: true; balance: number | null } | { ok: false; re
  */
 export interface BetLedger {
   debitStake(op: StakeDebit): Promise<DebitResult>;
-  creditCashout(op: CashoutCredit): Promise<void>;
+  /** Returns the user's new balance, or null on an idempotent replay. */
+  creditCashout(op: CashoutCredit): Promise<number | null>;
   settleLosses(roundId: number, lost: LostStake[], idempotencyKey: string, fencingToken: number): Promise<void>;
 }
 

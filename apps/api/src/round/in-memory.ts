@@ -94,15 +94,16 @@ export class InMemoryLedger implements BetLedger {
     return { ok: true, balance: bal - op.amount };
   }
 
-  async creditCashout(op: CashoutCredit): Promise<void> {
+  async creditCashout(op: CashoutCredit): Promise<number | null> {
     this.fence.check(op.fencingToken);
-    if (this.applied.has(op.idempotencyKey)) return;
+    if (this.applied.has(op.idempotencyKey)) return null;
     this.escrow -= op.stake;
     this.house -= op.payout - op.stake;
     this.balances.set(op.userId, this.balanceOf(op.userId) + op.payout);
     const bet = this.bets.get(op.betId);
     if (bet) Object.assign(bet, { status: 'CASHED_OUT', cashoutX100: op.x100, payout: op.payout, cashedAt: op.cashedAt });
     this.applied.add(op.idempotencyKey);
+    return this.balanceOf(op.userId);
   }
 
   async settleLosses(_roundId: number, lost: LostStake[], idempotencyKey: string, fencingToken: number): Promise<void> {

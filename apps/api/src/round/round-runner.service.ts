@@ -14,6 +14,7 @@ import { EventHub } from './event-hub';
 import { PostgresRoundStore } from './postgres-round-store';
 import { PostgresSeedSource, ensureActiveChain, type ActiveChain } from './postgres-seed-source';
 import { RoundEngine } from './round-engine';
+import { Sentry } from '../instrument';
 
 /**
  * Wires leadership to the round loop: the instance holding the Redis lease runs the engine,
@@ -29,6 +30,13 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
   drain!: RedisDrainBarrier;
   chain!: ActiveChain;
   private shuttingDown = false;
+  private readonly balanceListeners = new Set<(userId: string, balance: number) => void>();
+
+  /** Wallet balance changes reported by the ledger itself (humans only). */
+  onBalance(listener: (userId: string, balance: number) => void): () => void {
+    this.balanceListeners.add(listener);
+    return () => this.balanceListeners.delete(listener);
+  }
 
   constructor(
     @Inject(ENV) private readonly env: Env,
@@ -91,9 +99,18 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
         minBetCents: 10,
         maxBetCents: 1_000_000,
       },
-      onError: (e) => this.log.error(e instanceof Error ? e.stack : String(e)),
-      onFenced: () => this.log.error('fenced out by a newer leader; round loop stopped'),
+      onError: (e) => {
+        this.log.error(e instanceof Error ? e.stack : String(e));
+        Sentry.captureException(e, { tags: { component: 'round-engine', instance: env.INSTANCE_ID } });
+      },
+      onFenced: () => {
+        this.log.error('fenced out by a newer leader; round loop stopped');
+        Sentry.captureMessage('round engine fenced out by a newer leader', 'warning');
+      },
       onResume: ({ roundId, phase }) => this.log.log(`resumed round #${roundId} in phase ${phase}`),
+      onBalance: (userId, balance, isBot) => {
+        if (!isBot) for (const l of this.balanceListeners) l(userId, balance);
+      },
     });
 
     this.elector.onChange((leader, token) => {

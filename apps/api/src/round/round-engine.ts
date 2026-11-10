@@ -50,6 +50,8 @@ export interface RoundEngineDeps {
   /** Called when a write was rejected because a newer leader exists; the engine has already stopped. */
   onFenced?: () => void;
   onResume?: (info: { roundId: number; phase: RoundPhase }) => void;
+  /** A player's wallet balance changed (from the ledger's own RETURNING value: no extra query). */
+  onBalance?: (userId: string, balance: number, isBot: boolean) => void;
 }
 
 export interface PlaceBetInput {
@@ -72,7 +74,13 @@ export interface CashoutInput {
 
 export type BetResult = { ok: true; bet: PublicBet; balance?: number | null } | { ok: false; error: CommandError };
 
-type BetState = PersistedBet;
+type BetState = PersistedBet & {
+  /** Set while the cash-out's ledger write is in flight (decision already taken). */
+  cashing?: Promise<BetResult>;
+};
+
+/** A command either answers straight away or hands back the in-flight ledger write to await. */
+type Step = BetResult | { wait: Promise<BetResult> };
 
 interface RoundState {
   id: number;
@@ -88,6 +96,10 @@ interface RoundState {
   settledAt: number | null;
   bets: Map<string, BetState>; // by userId
   betKeys: Map<string, string>; // client idempotencyKey -> userId
+  /** Bets accepted (on time) whose stake debit is still being written. */
+  pendingBets: Map<string, Promise<BetResult>>; // by userId
+  /** Every ledger write in flight for this round; phase transitions wait for all of them. */
+  inflight: Set<Promise<unknown>>;
 }
 
 const HISTORY_SIZE = 50;
@@ -144,12 +156,19 @@ export class RoundEngine {
 
   // ── commands ─────────────────────────────────────────────────────────────
 
-  placeBet(input: PlaceBetInput): Promise<BetResult> {
-    return this.queue.run(() => this.guard(() => this.handlePlaceBet(input)));
+  /**
+   * Decisions are serialised (the queue), ledger writes are not: the queue task validates and
+   * reserves the bet synchronously, then the debit runs concurrently with other commands. Under
+   * load this turns "one Postgres transaction at a time" into a pipeline (see load/README).
+   */
+  async placeBet(input: PlaceBetInput): Promise<BetResult> {
+    const step = await this.queue.run(() => this.guardStep(() => this.beginPlaceBet(input)));
+    return 'wait' in step ? step.wait : step;
   }
 
-  cashOut(input: CashoutInput): Promise<BetResult> {
-    return this.queue.run(() => this.guard(() => this.handleCashout(input)));
+  async cashOut(input: CashoutInput): Promise<BetResult> {
+    const step = await this.queue.run(() => this.guardStep(() => this.beginCashout(input)));
+    return 'wait' in step ? step.wait : step;
   }
 
   // ── read model ───────────────────────────────────────────────────────────
@@ -247,6 +266,8 @@ export class RoundEngine {
       settledAt: p.settledAt,
       bets: new Map(bets.map((b) => [b.userId, b])),
       betKeys: new Map(bets.map((b) => [b.clientKey, b.userId])),
+      pendingBets: new Map(),
+      inflight: new Set(),
     };
   }
 
@@ -270,6 +291,8 @@ export class RoundEngine {
       settledAt: null,
       bets: new Map(),
       betKeys: new Map(),
+      pendingBets: new Map(),
+      inflight: new Set(),
     };
     await this.persist([
       { type: 'round.betting', roundId, seedHash: this.round.seedHash, bettingEndsAt: this.round.bettingEndsAt, serverTime: now },
@@ -279,6 +302,9 @@ export class RoundEngine {
 
   private async startRunning(): Promise<void> {
     const r = this.round!;
+    // Bets accepted before bettingEndsAt may still be writing their debit: the field is final
+    // only once they land.
+    await this.drainInflight(r);
     const { k } = this.deps.config;
     r.phase = 'RUNNING';
     r.startedAt = r.bettingEndsAt;
@@ -301,7 +327,7 @@ export class RoundEngine {
   private pendingAutos(): BetState[] {
     const r = this.round!;
     return [...r.bets.values()]
-      .filter((b) => b.status === 'ACTIVE' && b.autoX100 !== null && autoCashoutWins(b.autoX100, r.crashX100))
+      .filter((b) => b.status === 'ACTIVE' && !b.cashing && b.autoX100 !== null && autoCashoutWins(b.autoX100, r.crashX100))
       .sort((a, b) => a.autoX100! - b.autoX100!);
   }
 
@@ -312,7 +338,7 @@ export class RoundEngine {
     for (const bet of this.pendingAutos()) {
       const dueAfter = elapsedMsForX100(bet.autoX100!, this.deps.config.k);
       if (dueAfter > elapsed + 1) break; // 1 ms tolerance for timer/clock granularity
-      await this.settleCashout(bet, bet.autoX100!, true, r.startedAt! + dueAfter);
+      this.startCashout(r, bet, bet.autoX100!, true, r.startedAt! + dueAfter);
     }
     this.scheduleNextAuto();
   }
@@ -325,8 +351,11 @@ export class RoundEngine {
     // A late auto timer must not cost the player: any target below the crash point was reached
     // before the crash instant, so it is paid even if its timer had not fired yet.
     for (const bet of this.pendingAutos()) {
-      await this.settleCashout(bet, bet.autoX100!, true, r.startedAt! + elapsedMsForX100(bet.autoX100!, this.deps.config.k));
+      this.startCashout(r, bet, bet.autoX100!, true, r.startedAt! + elapsedMsForX100(bet.autoX100!, this.deps.config.k));
     }
+    // Persist CRASHED only once every winning cash-out is in the ledger: a new leader resuming
+    // from CRASHED must never see a winner's bet still ACTIVE.
+    await this.drainInflight(r);
     r.phase = 'CRASHED';
     r.crashedAt = r.crashAt!;
     await this.persist([{ type: 'round.crashed', roundId: r.id, crashX100: r.crashX100, crashedAt: r.crashedAt }]);
@@ -346,6 +375,7 @@ export class RoundEngine {
   private async settle(roundId: number): Promise<void> {
     const r = this.round;
     if (!this.running || !r || r.id !== roundId || r.phase !== 'CRASHED') return;
+    await this.drainInflight(r); // cash-outs accepted during the drain window
     const lost = [...r.bets.values()].filter((b) => b.status === 'ACTIVE');
     if (lost.length) {
       await this.deps.ledger.settleLosses(
@@ -373,20 +403,20 @@ export class RoundEngine {
     this.schedule('next', nextRoundAt, () => this.openBetting(r.id + 1));
   }
 
-  // ── command handlers (run inside the serial queue) ───────────────────────
+  // ── command handlers (decide inside the serial queue, write outside it) ──
 
-  private async handlePlaceBet(input: PlaceBetInput): Promise<BetResult> {
+  private beginPlaceBet(input: PlaceBetInput): Step {
     const r = this.round;
     if (!this.running || !r || r.phase !== 'BETTING' || input.receivedAt >= r.bettingEndsAt) {
       return { ok: false, error: 'BETTING_CLOSED' };
     }
     const existingByKey = r.betKeys.get(input.idempotencyKey);
     if (existingByKey !== undefined) {
-      return existingByKey === input.userId
-        ? { ok: true, bet: toPublic(r.bets.get(input.userId)!) }
-        : { ok: false, error: 'VALIDATION_ERROR' };
+      if (existingByKey !== input.userId) return { ok: false, error: 'VALIDATION_ERROR' };
+      const pending = r.pendingBets.get(input.userId);
+      return pending ? { wait: pending } : { ok: true, bet: toPublic(r.bets.get(input.userId)!) };
     }
-    if (r.bets.has(input.userId)) return { ok: false, error: 'ALREADY_BET' };
+    if (r.bets.has(input.userId) || r.pendingBets.has(input.userId)) return { ok: false, error: 'ALREADY_BET' };
 
     const { minBetCents, maxBetCents } = this.deps.config;
     const auto = input.autoX100 ?? null;
@@ -399,46 +429,63 @@ export class RoundEngine {
       return { ok: false, error: 'VALIDATION_ERROR' };
     }
 
-    const betId = randomUUID();
-    const debit = await this.deps.ledger.debitStake({
-      betId,
-      userId: input.userId,
-      roundId: r.id,
-      amount: input.amount,
-      autoX100: auto,
-      clientKey: input.idempotencyKey,
-      placedAt: input.receivedAt,
-      idempotencyKey: `bet:${r.id}:${input.userId}`,
-      fencingToken: this.token,
-    });
-    if (!debit.ok) return { ok: false, error: debit.reason };
-
-    const bet: BetState = {
-      betId,
-      roundId: r.id,
-      userId: input.userId,
-      username: input.username,
-      isBot: input.isBot ?? false,
-      amount: input.amount,
-      autoX100: auto,
-      status: 'ACTIVE',
-      cashoutX100: null,
-      payout: null,
-      clientKey: input.idempotencyKey,
-      placedAt: input.receivedAt,
-      cashedAt: null,
-    };
-    r.bets.set(input.userId, bet);
+    // Reserve synchronously: a retry or a second bet from the same user sees it at once.
     r.betKeys.set(input.idempotencyKey, input.userId);
-    this.emit({ type: 'bet.placed', bet: toPublic(bet) });
-    return { ok: true, bet: toPublic(bet), balance: debit.balance };
+    const betId = randomUUID();
+    const write = (async (): Promise<BetResult> => {
+      try {
+        const debit = await this.deps.ledger.debitStake({
+          betId,
+          userId: input.userId,
+          roundId: r.id,
+          amount: input.amount,
+          autoX100: auto,
+          clientKey: input.idempotencyKey,
+          placedAt: input.receivedAt,
+          idempotencyKey: `bet:${r.id}:${input.userId}`,
+          fencingToken: this.token,
+        });
+        if (!debit.ok) {
+          r.betKeys.delete(input.idempotencyKey);
+          return { ok: false, error: debit.reason };
+        }
+        const bet: BetState = {
+          betId,
+          roundId: r.id,
+          userId: input.userId,
+          username: input.username,
+          isBot: input.isBot ?? false,
+          amount: input.amount,
+          autoX100: auto,
+          status: 'ACTIVE',
+          cashoutX100: null,
+          payout: null,
+          clientKey: input.idempotencyKey,
+          placedAt: input.receivedAt,
+          cashedAt: null,
+        };
+        r.bets.set(input.userId, bet);
+        this.emit({ type: 'bet.placed', bet: toPublic(bet) });
+        if (debit.balance !== null) this.deps.onBalance?.(bet.userId, debit.balance, bet.isBot);
+        return { ok: true, bet: toPublic(bet), balance: debit.balance };
+      } catch (e) {
+        r.betKeys.delete(input.idempotencyKey);
+        return this.writeFailed(e);
+      } finally {
+        r.pendingBets.delete(input.userId);
+      }
+    })();
+    r.pendingBets.set(input.userId, write);
+    this.track(r, write);
+    return { wait: write };
   }
 
-  private async handleCashout(input: CashoutInput): Promise<BetResult> {
+  private beginCashout(input: CashoutInput): Step {
     const r = this.round;
     if (!r || r.id !== input.roundId) return { ok: false, error: 'ROUND_MISMATCH' };
     const bet = r.bets.get(input.userId);
     if (!bet) return { ok: false, error: 'NO_ACTIVE_BET' };
+    if (bet.cashing) return { wait: bet.cashing }; // same click retried while its write is in flight
     if (bet.status === 'CASHED_OUT') return { ok: true, bet: toPublic(bet) }; // idempotent retry
     if (bet.status === 'LOST' || r.phase === 'SETTLED') return { ok: false, error: 'CASHOUT_AFTER_CRASH' };
     if (r.phase === 'BETTING') return { ok: false, error: 'NOT_RUNNING' };
@@ -453,34 +500,62 @@ export class RoundEngine {
     if (!decision.ok) return { ok: false, error: decision.reason };
 
     // If the auto target was already passed when the click arrived, the auto fired first.
-    if (bet.autoX100 !== null && autoCashoutWins(bet.autoX100, r.crashX100) && bet.autoX100 <= decision.x100) {
-      await this.settleCashout(bet, bet.autoX100, true, r.startedAt! + elapsedMsForX100(bet.autoX100, this.deps.config.k));
-    } else {
-      await this.settleCashout(bet, decision.x100, false, input.receivedAt);
-    }
+    const write =
+      bet.autoX100 !== null && autoCashoutWins(bet.autoX100, r.crashX100) && bet.autoX100 <= decision.x100
+        ? this.startCashout(r, bet, bet.autoX100, true, r.startedAt! + elapsedMsForX100(bet.autoX100, this.deps.config.k))
+        : this.startCashout(r, bet, decision.x100, false, input.receivedAt);
     if (r.phase === 'RUNNING') this.scheduleNextAuto();
-    return { ok: true, bet: toPublic(bet) };
+    return { wait: write };
   }
 
-  private async settleCashout(bet: BetState, x100: number, auto: boolean, cashedAt: number): Promise<void> {
+  /** The decision is final when this is called; it only writes it and announces it. */
+  private startCashout(r: RoundState, bet: BetState, x100: number, auto: boolean, cashedAt: number): Promise<BetResult> {
     const payout = payoutFor(bet.amount, x100);
-    await this.deps.ledger.creditCashout({
-      betId: bet.betId,
-      userId: bet.userId,
-      roundId: bet.roundId,
-      stake: bet.amount,
-      payout,
-      x100,
-      auto,
-      cashedAt,
-      idempotencyKey: `cashout:${bet.betId}`,
-      fencingToken: this.token,
-    });
-    bet.status = 'CASHED_OUT';
-    bet.cashoutX100 = x100;
-    bet.payout = payout;
-    bet.cashedAt = cashedAt;
-    this.emit({ type: 'bet.cashed_out', bet: toPublic(bet), auto });
+    const write = (async (): Promise<BetResult> => {
+      try {
+        const balance = await this.deps.ledger.creditCashout({
+          betId: bet.betId,
+          userId: bet.userId,
+          roundId: bet.roundId,
+          stake: bet.amount,
+          payout,
+          x100,
+          auto,
+          cashedAt,
+          idempotencyKey: `cashout:${bet.betId}`,
+          fencingToken: this.token,
+        });
+        bet.status = 'CASHED_OUT';
+        bet.cashoutX100 = x100;
+        bet.payout = payout;
+        bet.cashedAt = cashedAt;
+        this.emit({ type: 'bet.cashed_out', bet: toPublic(bet), auto });
+        if (balance !== null) this.deps.onBalance?.(bet.userId, balance, bet.isBot);
+        return { ok: true, bet: toPublic(bet) };
+      } catch (e) {
+        return this.writeFailed(e);
+      } finally {
+        bet.cashing = undefined;
+      }
+    })();
+    bet.cashing = write;
+    this.track(r, write);
+    return write;
+  }
+
+  private track(r: RoundState, p: Promise<unknown>): void {
+    r.inflight.add(p);
+    void p.catch(() => undefined).finally(() => r.inflight.delete(p));
+  }
+
+  private async drainInflight(r: RoundState): Promise<void> {
+    while (r.inflight.size) await Promise.allSettled([...r.inflight]);
+  }
+
+  /** A write that failed after the decision: fenced out means a newer leader owns the round. */
+  private writeFailed(e: unknown): BetResult {
+    this.fail(e);
+    return { ok: false, error: 'NOT_LEADER' };
   }
 
   // ── plumbing ─────────────────────────────────────────────────────────────
@@ -505,6 +580,11 @@ export class RoundEngine {
       events,
     );
     for (const e of events) this.emit(e);
+  }
+
+  private guardStep(fn: () => Step): Step {
+    if (!this.running) return { ok: false, error: 'NOT_LEADER' };
+    return fn();
   }
 
   /** Command wrapper: a fenced-out leader answers NOT_LEADER instead of throwing at the caller. */

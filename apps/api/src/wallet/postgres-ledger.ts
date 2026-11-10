@@ -127,14 +127,14 @@ export class PostgresLedger implements BetLedger {
     });
   }
 
-  async creditCashout(op: CashoutCredit): Promise<void> {
-    await withTransaction(this.ds, async (q) => {
+  async creditCashout(op: CashoutCredit): Promise<number | null> {
+    return withTransaction(this.ds, async (q) => {
       const txId = await this.claimKey(q, 'CASHOUT', op.idempotencyKey, op.roundId, op.betId);
-      if (!txId) return;
+      if (!txId) return null;
       await assertFence(q, op.fencingToken);
 
       const account = await this.lockUserAccount(q, op.userId);
-      await q.query(`UPDATE accounts SET balance = balance + $2 WHERE id = $1`, [account.id, op.payout]);
+      const [row] = await updateReturning<{ balance: string }>(q, `UPDATE accounts SET balance = balance + $2 WHERE id = $1 RETURNING balance`, [account.id, op.payout]);
       const profit = op.payout - op.stake;
       await this.post(q, txId, [
         [this.sys.escrow, -op.stake],
@@ -156,6 +156,7 @@ export class PostgresLedger implements BetLedger {
         auto: op.auto,
         cashedAt: op.cashedAt,
       });
+      return num(row!.balance);
     });
   }
 
