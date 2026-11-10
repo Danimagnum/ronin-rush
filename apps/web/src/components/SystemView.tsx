@@ -146,6 +146,18 @@ export function SystemView() {
           ) : null}
         </Tile>
 
+        {m?.platform ? (
+          <Tile title="platform-core wallet">
+            <p className="text-xs text-mist">Players' stakes are holds in platform-core; captures are settled from a command outbox.</p>
+            <div className="grid grid-cols-2 gap-x-4">
+              <Stat label="Pending captures" value={String(m.platform.pendingSettlements)} tone={m.platform.pendingSettlements > 0 ? 'text-kin' : undefined} />
+              <Stat label="Settled" value={String(m.platform.settled)} />
+              <Stat label="Core calls / failures" value={`${m.platform.coreCalls} / ${m.platform.coreFailures}`} />
+              <Stat label="Core p95" value={`${m.platform.coreP95Ms} ms`} />
+            </div>
+          </Tile>
+        ) : null}
+
         <Tile title="Ledger">
           {m ? (
             <>

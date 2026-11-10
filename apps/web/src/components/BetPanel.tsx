@@ -14,6 +14,8 @@ const ERRORS: Record<string, string> = {
   BETTING_CLOSED: 'Betting closed for this round. Wait for the next duel.',
   ALREADY_BET: 'You already have a bet in this round.',
   INSUFFICIENT_FUNDS: 'Not enough ryō. Lower the stake or refill your purse.',
+  RESPONSIBLE_GAMING_BLOCKED: 'Your platform account limits or status do not allow this stake.',
+  WALLET_UNAVAILABLE: 'The wallet is unreachable right now. Nothing was charged; try again.',
   CASHOUT_AFTER_CRASH: 'Too late: the final blow landed before your cash-out reached the server.',
   NOT_RUNNING: 'The duel has not started yet.',
   VALIDATION_ERROR: 'Check the stake and auto cash-out values.',

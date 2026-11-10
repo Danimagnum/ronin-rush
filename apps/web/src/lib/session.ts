@@ -6,6 +6,22 @@ export interface StoredSession {
   username: string;
 }
 
+/**
+ * PLATFORM_MODE hand-off: a platform portal opens the game with `#platform_token=<Core JWT>`.
+ * The token is taken from the fragment (never sent to servers in logs or Referer) and removed
+ * from the address bar at once.
+ */
+export function takePlatformToken(): string | null {
+  try {
+    const m = /(?:^#|&)platform_token=([^&]+)/.exec(window.location.hash);
+    if (!m) return null;
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
+}
+
 export function loadSession(): StoredSession | null {
   try {
     const raw = localStorage.getItem(KEY);

@@ -6,7 +6,7 @@ import { ResponsibleGaming } from './ResponsibleGaming';
 import { DuelAudio } from '@/game/audio';
 import { api, type AuthResponse } from '@/lib/api';
 import { connect, disconnect } from '@/lib/realtime';
-import { loadPref, loadSession, savePref, saveSession } from '@/lib/session';
+import { loadPref, loadSession, savePref, saveSession, takePlatformToken } from '@/lib/session';
 import { useGame } from '@/lib/store';
 import { createContext, useContext } from 'react';
 
@@ -27,7 +27,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     set({ sound: loadPref('sound', false), sessionStartedAt: loadPref('sessionStartedAt', Date.now()) });
-    const s = loadSession();
+    const platformToken = takePlatformToken();
+    const s = platformToken ? { token: platformToken, username: '' } : loadSession();
     if (!s) {
       connect(null);
       return () => disconnect();
@@ -35,6 +36,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     api
       .me(s.token)
       .then((user) => {
+        if (platformToken) saveSession({ token: platformToken, username: user.username });
         setAuth(s.token, user);
         connect(s.token);
       })
