@@ -39,6 +39,10 @@ jobs:
       - run: pnpm build
       # Includes the 1,000,000-round fairness distribution test and the 500-concurrent-op ledger test.
       - run: pnpm test
+      # Contract test, named on its own: the events the real engine and ledger persist, validated
+      # with the kit of the pinned @danigil/platform-contracts, plus the relay's schema gate.
+      - name: Event contract (@danigil/platform-contracts)
+        run: pnpm --filter @ronin/api exec vitest run test/contract.test.ts test/outbox-contract.test.ts
 
   e2e:
     name: Playwright (bet → cash out, late cash-out rejected, verify)
@@ -64,7 +68,14 @@ jobs:
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ronin/shared build && pnpm --filter @ronin/api build
-      - run: pnpm --filter @ronin/e2e exec playwright install --with-deps chromium
+      # The runner's apt mirrors fail now and then ("Some index files failed to download").
+      - name: Install Chromium (with retries)
+        run: |
+          for i in 1 2 3; do
+            pnpm --filter @ronin/e2e exec playwright install --with-deps chromium && exit 0
+            echo "attempt $i failed, retrying in 20 s"; sleep 20
+          done
+          exit 1
       - run: pnpm test:e2e
       - if: failure()
         uses: actions/upload-artifact@v4
