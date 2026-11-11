@@ -51,14 +51,16 @@ sequenceDiagram
 
 ```env
 PLATFORM_MODE=true
-PLATFORM_CORE_URL=http://core-api:3001
-PLATFORM_JWKS_URL=http://core-api:3001/.well-known/jwks.json
-PLATFORM_JWT_ISSUER=http://localhost:3001        # Core's JWT_ISSUER
-PLATFORM_JWT_AUDIENCE=platform-core              # Core's JWT_AUDIENCE
-PLATFORM_CLIENT_ID=ronin-rush
-PLATFORM_CLIENT_SECRET=<from Core's operator>
-PLATFORM_HOUSE_ACCOUNT_ID=<uuid of Core's house account>
-PLATFORM_CURRENCY=EUR
+SERVICE_NAME=ronin-rush
+CORE_URL=http://core-api:3001
+CORE_JWKS_URL=http://core-api:3001/.well-known/jwks.json
+CORE_ISSUER=http://localhost:3001                # Core's JWT_ISSUER (must be a URL)
+CORE_AUDIENCE=platform-core                      # Core's JWT_AUDIENCE
+CORE_CLIENT_ID=ronin-rush
+CORE_CLIENT_SECRET=<from Core's operator>
+CORE_HOUSE_ACCOUNT_ID=<uuid of Core's house account>
+CORE_CURRENCY=EUR
+# CORE_TOKEN_URL defaults to CORE_URL/oauth/token. The pre-0.2.0 PLATFORM_* names still work.
 KAFKA_BROKERS=kafka:9092                         # the platform's broker
 ```
 

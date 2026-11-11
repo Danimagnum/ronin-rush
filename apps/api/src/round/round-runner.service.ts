@@ -133,7 +133,7 @@ export class RoundRunner implements OnApplicationBootstrap, OnApplicationShutdow
         for (const l of this.balanceListeners) l(userId, balance);
       };
       this.settleTimer = setInterval(() => void this.platform!.tick().catch(() => undefined), 1_000);
-      this.log.log(`PLATFORM_MODE: players' stakes are platform-core holds (${env.PLATFORM_CORE_URL})`);
+      this.log.log(`PLATFORM_MODE: players' stakes are platform-core holds (${env.CORE_URL})`);
     }
     await this.bus.start();
     await this.elector.start();
