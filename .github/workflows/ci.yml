@@ -98,16 +98,26 @@ jobs:
         uses: docker/login-action@v3
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ronin-rush-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ronin-rush-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/amd64
           build-args: NEXT_PUBLIC_API_URL=
+          # A plain image manifest (no attestation index): the NAS runs Docker 20.10.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           push: ${{ github.event_name == 'push' }}
+          # Full and short commit (the short one matches the NAS release tags), plus main.
           tags: |
             ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.short }}
             ${{ steps.name.outputs.image }}:main
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
