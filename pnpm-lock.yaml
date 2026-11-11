@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@danigil/platform-contracts':
+        specifier: 0.2.0
+        version: 0.2.0(@nestjs/common@11.2.8(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2)
       '@nestjs/common':
         specifier: ^11.0.10
         version: 11.2.8(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -72,8 +75,8 @@ importers:
         specifier: ^4.8.1
         version: 4.8.4
       typescript:
-        specifier: ~5.7.3
-        version: 5.7.3
+        specifier: ~5.8.3
+        version: 5.8.3
       vitest:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)
@@ -91,7 +94,7 @@ importers:
         version: link:../../packages/shared
       '@sentry/nextjs':
         specifier: ^9.10.0
-        version: 9.47.2(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(next@15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react@19.1.1)(webpack@5.106.2)
+        version: 9.47.2(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(next@15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react@19.1.1)(webpack@5.106.2(lightningcss@1.33.0))
       next:
         specifier: 15.5.4
         version: 15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
@@ -129,6 +132,9 @@ importers:
       typescript:
         specifier: ~5.7.3
         version: 5.7.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.5)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)
 
   e2e:
     devDependencies:
@@ -277,6 +283,21 @@ packages:
   '@colors/colors@1.5.0':
     resolution: {integrity: sha512-ooWCrlZP11i8GImSjTHYHLkvFDP48nS4+204nGb1RiX/WXYHmJA2III9/e2DWVabCESdW7hBAEzHRqUn9OUVvQ==}
     engines: {node: '>=0.1.90'}
+
+  '@danigil/platform-contracts@0.2.0':
+    resolution: {integrity: sha512-hE7rnhqopB/fq85iBxAA1koSreLP2aSte/WoG9WjZs0/fS69ZdktUH/cNBPbFO1PqFxM2eddJnRchhjCrxRCvw==}
+    engines: {node: '>=22.13.0'}
+    peerDependencies:
+      '@nestjs/common': ^10 || ^11
+      reflect-metadata: ^0.2
+      rxjs: ^7
+    peerDependenciesMeta:
+      '@nestjs/common':
+        optional: true
+      reflect-metadata:
+        optional: true
+      rxjs:
+        optional: true
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -2414,6 +2435,9 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
+  jose@6.2.17:
+    resolution: {integrity: sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg==}
+
   js-binary-schema-parser@2.0.3:
     resolution: {integrity: sha512-xezGJmOb4lk/M1ZZLTR/jaBHQ4gG/lqQnJqdIv4721DMggsa1bDVlHXNeHYogaIEHD9vCRv0fcL4hMA+Coarkg==}
 
@@ -3412,6 +3436,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@5.8.3:
+    resolution: {integrity: sha512-p1diW6TqL9L07nNxvRMM7hMMw4c5XOo/1ibL4aAIGmSAt9slTE1Xgw5KWuof2uTOvCg9BY7ZRi+GaF+7sfgPeQ==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
@@ -3650,6 +3679,9 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
   zustand@5.0.8:
     resolution: {integrity: sha512-gyPKpIaxY9XcO2vSMrLbiER7QMAMGOQZVRdJ6Zi782jkbzZygq5GI9nG8g+sMgitRtndwaBSl7uiqC49o1SSiw==}
     engines: {node: '>=12.20.0'}
@@ -3830,6 +3862,16 @@ snapshots:
 
   '@colors/colors@1.5.0':
     optional: true
+
+  '@danigil/platform-contracts@0.2.0(@nestjs/common@11.2.8(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2)':
+    dependencies:
+      jose: 6.2.17
+      kafkajs: 2.2.4
+      zod: 4.6.7
+    optionalDependencies:
+      '@nestjs/common': 11.2.8(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      reflect-metadata: 0.2.2
+      rxjs: 7.8.2
 
   '@emnapi/runtime@1.11.3':
     dependencies:
@@ -4770,7 +4812,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@sentry/nextjs@9.47.2(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(next@15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react@19.1.1)(webpack@5.106.2)':
+  '@sentry/nextjs@9.47.2(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(next@15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react@19.1.1)(webpack@5.106.2(lightningcss@1.33.0))':
     dependencies:
       '@opentelemetry/api': 1.10.0
       '@opentelemetry/semantic-conventions': 1.45.0
@@ -4781,7 +4823,7 @@ snapshots:
       '@sentry/opentelemetry': 9.47.2(@opentelemetry/api@1.10.0)(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/semantic-conventions@1.45.0)
       '@sentry/react': 9.47.2(react@19.1.1)
       '@sentry/vercel-edge': 9.47.2(@opentelemetry/context-async-hooks@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/core@1.30.1(@opentelemetry/api@1.10.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.10.0))
-      '@sentry/webpack-plugin': 3.6.1(webpack@5.106.2)
+      '@sentry/webpack-plugin': 3.6.1(webpack@5.106.2(lightningcss@1.33.0))
       chalk: 3.0.0
       next: 15.5.4(@babel/core@7.29.13)(@opentelemetry/api@1.10.0)(@playwright/test@1.63.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
       resolve: 1.22.8
@@ -4877,12 +4919,12 @@ snapshots:
       - '@opentelemetry/core'
       - '@opentelemetry/sdk-trace-base'
 
-  '@sentry/webpack-plugin@3.6.1(webpack@5.106.2)':
+  '@sentry/webpack-plugin@3.6.1(webpack@5.106.2(lightningcss@1.33.0))':
     dependencies:
       '@sentry/bundler-plugin-core': 3.6.1
       unplugin: 1.0.1
       uuid: 9.0.1
-      webpack: 5.106.2
+      webpack: 5.106.2(lightningcss@1.33.0)
     transitivePeerDependencies:
       - encoding
       - supports-color
@@ -6013,6 +6055,8 @@ snapshots:
 
   jiti@2.7.0: {}
 
+  jose@6.2.17: {}
+
   js-binary-schema-parser@2.0.3: {}
 
   js-tokens@4.0.0: {}
@@ -6575,15 +6619,6 @@ snapshots:
     optionalDependencies:
       webpack: 5.106.2(lightningcss@1.33.0)
 
-  schema-utils@4.8.2(webpack@5.106.2):
-    dependencies:
-      '@types/json-schema': 7.0.15
-      ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
-      ajv-keywords: 5.1.0(ajv@8.20.0)
-    optionalDependencies:
-      webpack: 5.106.2
-
   semver@6.3.2: {}
 
   semver@7.8.6: {}
@@ -6840,14 +6875,6 @@ snapshots:
     optionalDependencies:
       lightningcss: 1.33.0
 
-  terser-webpack-plugin@5.6.1(webpack@5.106.2):
-    dependencies:
-      '@jridgewell/trace-mapping': 0.3.31
-      jest-worker: 27.5.1
-      schema-utils: 4.8.2(webpack@5.106.2)
-      terser: 5.51.2
-      webpack: 5.106.2
-
   terser@5.51.2:
     dependencies:
       '@jridgewell/source-map': 0.3.11
@@ -6953,6 +6980,8 @@ snapshots:
       - supports-color
 
   typescript@5.7.3: {}
+
+  typescript@5.8.3: {}
 
   typescript@5.9.3: {}
 
@@ -7088,46 +7117,6 @@ snapshots:
 
   webpack-virtual-modules@0.5.0: {}
 
-  webpack@5.106.2:
-    dependencies:
-      '@types/eslint-scope': 3.7.7
-      '@types/estree': 1.0.10
-      '@types/json-schema': 7.0.15
-      '@webassemblyjs/ast': 1.14.1
-      '@webassemblyjs/wasm-edit': 1.14.1
-      '@webassemblyjs/wasm-parser': 1.14.1
-      acorn: 8.19.0
-      acorn-import-phases: 1.0.4(acorn@8.19.0)
-      browserslist: 4.29.5
-      chrome-trace-event: 1.0.4
-      enhanced-resolve: 5.26.1
-      es-module-lexer: 2.3.2
-      eslint-scope: 5.1.1
-      events: 3.3.0
-      glob-to-regexp: 0.4.1
-      graceful-fs: 4.2.11
-      loader-runner: 4.3.2
-      mime-db: 1.54.0
-      neo-async: 2.6.2
-      schema-utils: 4.8.2(webpack@5.106.2)
-      tapable: 2.3.3
-      terser-webpack-plugin: 5.6.1(webpack@5.106.2)
-      watchpack: 2.6.3
-      webpack-sources: 3.7.0
-    transitivePeerDependencies:
-      - '@minify-html/node'
-      - '@swc/core'
-      - '@swc/css'
-      - '@swc/html'
-      - clean-css
-      - cssnano
-      - csso
-      - esbuild
-      - html-minifier-terser
-      - lightningcss
-      - postcss
-      - uglify-js
-
   webpack@5.106.2(lightningcss@1.33.0):
     dependencies:
       '@types/eslint-scope': 3.7.7
@@ -7239,6 +7228,8 @@ snapshots:
   yoctocolors-cjs@2.1.3: {}
 
   zod@3.25.76: {}
+
+  zod@4.6.7: {}
 
   zustand@5.0.8(@types/react@19.3.0)(react@19.1.1):
     optionalDependencies:

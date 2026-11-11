@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { CashoutCommand, PlaceBetCommand, SOCKET_EVENTS, TimePing, type CommandError, type InstanceStatus, type RoundEvent } from '@ronin/shared';
+import { AuthRenewCommand, CashoutCommand, PlaceBetCommand, SOCKET_EVENTS, TimePing, type CommandError, type InstanceStatus, type RoundEvent } from '@ronin/shared';
 import type Redis from 'ioredis';
 import { Server, type Socket } from 'socket.io';
 import { AuthService, type Principal } from '../auth/auth.service';
@@ -133,11 +133,32 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
   }
 
   private onConnection(socket: Socket): void {
-    const principal = socket.data.principal as Principal | null;
+    let principal = socket.data.principal as Principal | null;
     const limiter = new RateLimiter(10);
+    let expiryTimer: NodeJS.Timeout | null = null;
+    // Tell the client the moment its token stops being accepted; the socket stays open (it can
+    // keep watching and renew), but commands are refused from then on.
+    const armExpiry = () => {
+      if (expiryTimer) clearTimeout(expiryTimer);
+      expiryTimer = null;
+      const expiresAt = principal?.expiresAt;
+      if (!expiresAt) return;
+      const ms = Math.min(Math.max(0, expiresAt - Date.now()), 2 ** 31 - 1);
+      expiryTimer = setTimeout(() => socket.emit(SOCKET_EVENTS.authExpired, { expiresAt }), ms);
+    };
+    /** JWT exp is wall-clock seconds, so it is compared with Date.now(), never stretched. */
+    const denied = (): CommandError | null => {
+      if (!principal) return 'UNAUTHENTICATED';
+      if (principal.expiresAt !== undefined && Date.now() >= principal.expiresAt) return 'AUTH_EXPIRED';
+      return null;
+    };
     this.localConnections++;
-    socket.on('disconnect', () => this.localConnections--);
+    socket.on('disconnect', () => {
+      this.localConnections--;
+      if (expiryTimer) clearTimeout(expiryTimer);
+    });
     if (principal) void socket.join(`user:${principal.userId}`);
+    armExpiry();
     void this.readModel.hello(principal).then((hello) => socket.emit(SOCKET_EVENTS.hello, hello));
 
     socket.on(SOCKET_EVENTS.timePing, (raw: unknown, ack?: Ack) => {
@@ -151,7 +172,8 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     socket.on(SOCKET_EVENTS.placeBet, (raw: unknown, ack?: Ack) => {
       const receivedAt = this.clock.now();
       if (typeof ack !== 'function') return;
-      if (!principal) return ack(fail('UNAUTHENTICATED'));
+      const refused = denied();
+      if (refused || !principal) return ack(fail(refused ?? 'UNAUTHENTICATED'));
       if (!limiter.take()) return ack(fail('RATE_LIMITED'));
       const cmd = PlaceBetCommand.safeParse(raw);
       if (!cmd.success) return ack(fail('VALIDATION_ERROR'));
@@ -167,11 +189,29 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     socket.on(SOCKET_EVENTS.cashout, (raw: unknown, ack?: Ack) => {
       const receivedAt = this.clock.now();
       if (typeof ack !== 'function') return;
-      if (!principal) return ack(fail('UNAUTHENTICATED'));
+      const refused = denied();
+      if (refused || !principal) return ack(fail(refused ?? 'UNAUTHENTICATED'));
       if (!limiter.take()) return ack(fail('RATE_LIMITED'));
       const cmd = CashoutCommand.safeParse(raw);
       if (!cmd.success) return ack(fail('VALIDATION_ERROR'));
       this.respond(this.runner.bus.submit({ kind: 'cashout', input: { ...cmd.data, userId: principal.userId, receivedAt } }), ack);
+    });
+
+    // Token renewal without reconnecting: the round, the bet and any auto cash-out carry on.
+    // The renewed token must belong to the same player; an anonymous socket may sign in here.
+    socket.on(SOCKET_EVENTS.authRenew, async (raw: unknown, ack?: Ack) => {
+      if (typeof ack !== 'function') return;
+      if (!limiter.take()) return ack(fail('RATE_LIMITED'));
+      const cmd = AuthRenewCommand.safeParse(raw);
+      if (!cmd.success) return ack(fail('VALIDATION_ERROR'));
+      const next = await this.auth.verify(cmd.data.token).catch(() => null);
+      if (!next) return ack(fail('UNAUTHENTICATED'));
+      if (principal && next.userId !== principal.userId) return ack(fail('IDENTITY_MISMATCH'));
+      if (!principal) void socket.join(`user:${next.userId}`);
+      principal = next;
+      socket.data.principal = next;
+      armExpiry();
+      ack({ ok: true, expiresAt: next.expiresAt ?? null });
     });
 
     socket.on(SOCKET_EVENTS.systemSubscribe, (on: unknown) => {

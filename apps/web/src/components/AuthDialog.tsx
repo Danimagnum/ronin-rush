@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api, type AuthResponse } from '@/lib/api';
+import { useGame } from '@/lib/store';
 
 export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose: () => void; onAuthed: (r: AuthResponse) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -9,6 +10,7 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const platformMode = useGame((s) => s.platformMode);
 
   useEffect(() => {
     const d = ref.current;
@@ -29,6 +31,30 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
       setBusy(false);
     }
   }
+
+  // PLATFORM_MODE: identity belongs to platform-core; no guests, sign-up or passwords here.
+  if (platformMode)
+    return (
+      <dialog
+        ref={ref}
+        onClose={onClose}
+        aria-labelledby="auth-title"
+        className="m-auto w-[min(92vw,400px)] rounded-[var(--radius-panel)] bg-ai-800 p-0 text-washi backdrop:bg-ai-950/80"
+      >
+        <div className="p-6">
+          <h2 id="auth-title" className="font-display text-2xl font-extrabold">
+            Sign in on the platform
+          </h2>
+          <p className="mt-2 text-sm text-mist">
+            Accounts, balances and limits for this table are managed by the platform. Open Ronin Rush from your
+            platform portal to play.
+          </p>
+          <button type="button" onClick={onClose} className="mt-5 w-full rounded-xl bg-ai-700 py-3 font-display font-bold text-washi hover:bg-ai-600">
+            Close
+          </button>
+        </div>
+      </dialog>
+    );
 
   return (
     <dialog

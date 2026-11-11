@@ -1,8 +1,14 @@
+import { createClientCredentialsProvider } from '@danigil/platform-contracts';
+
 /**
- * Minimal client for platform-core's wallet and responsible-gaming APIs (contract:
- * @danigil/platform-contracts, wallet OpenAPI + platform-core docs/integration.md).
+ * Client for platform-core's LEGACY wallet routes (/v1/wallet). @danigil/platform-contracts 0.2.0
+ * (docs/migration-0.2.0.md) tells Ronin to keep the legacy atomic capture+payout until Core ships
+ * an equivalent settlement API: a plain capture followed by a payout is not equivalent. Those
+ * routes are outside the package's WalletClient, so this small client stays, but the machine
+ * token comes from the package's client-credentials provider.
  *
- *  - Service token: OAuth2 client credentials, cached until shortly before expiry.
+ *  - Service token: createClientCredentialsProvider (scopes wallet:legacy:read/write), cached and
+ *    renewed before expiry, concurrent grants shared; forced renewal once on a 401.
  *  - Every write sends an Idempotency-Key. Ambiguous failures (network, timeout, 5xx, 429,
  *    409 idempotency_in_progress) are retried with the SAME key and body, so Core applies
  *    the write at most once and replays the original response.
@@ -40,6 +46,8 @@ export interface CoreHold {
 
 export interface CoreClientOptions {
   baseUrl: string;
+  /** Defaults to baseUrl + /oauth/token. */
+  tokenUrl?: string;
   clientId: string;
   clientSecret: string;
   /** Wallet currency used by Ronin stakes (Core keeps one account per currency). */
@@ -50,11 +58,11 @@ export interface CoreClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-const SCOPES = 'wallet:legacy:read wallet:legacy:write';
+/** Provisioning matrix of the 0.2.0 contract (docs/auth.md) for Ronin's legacy atomic settlement. */
+export const CORE_SCOPES = ['wallet:legacy:read', 'wallet:legacy:write'] as const;
 
 export class CoreClient {
-  private token: { value: string; expiresAt: number } | null = null;
-  private tokenPending: Promise<string> | null = null;
+  private readonly token: (forceRefresh?: boolean) => Promise<string>;
   private readonly fetch: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   /** Latency of recent calls, for the System view. */
@@ -65,6 +73,13 @@ export class CoreClient {
   constructor(private readonly opts: CoreClientOptions) {
     this.fetch = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.token = createClientCredentialsProvider({
+      tokenUrl: opts.tokenUrl ?? this.url('/oauth/token'),
+      clientId: opts.clientId,
+      clientSecret: opts.clientSecret,
+      scopes: CORE_SCOPES,
+      fetch: this.fetch,
+    });
   }
 
   get currency(): string {
@@ -105,31 +120,38 @@ export class CoreClient {
   private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
     const retries = this.opts.retries ?? 3;
     let attempt = 0;
+    let renewed = false;
+    let force = false;
     for (;;) {
       const started = Date.now();
       this.calls++;
       try {
-        const res = await this.once<T>(method, path, body, idempotencyKey);
+        const res = await this.once<T>(method, path, body, idempotencyKey, force);
         this.record(Date.now() - started);
         return res;
       } catch (e) {
         this.record(Date.now() - started);
         const err = e instanceof CoreError ? e : new CoreError(0, 'network_error', (e as Error).message);
+        // An expired or revoked machine token: renew it once, same idempotency key and body.
+        if (err.status === 401 && !renewed) {
+          renewed = force = true;
+          continue;
+        }
+        force = false;
         // A GET is always safe to retry; a write only with its idempotency key.
         const safe = method === 'GET' || Boolean(idempotencyKey);
         if (!err.retriable || !safe || attempt >= retries) {
           this.failures++;
           throw err;
         }
-        if (err.status === 401) this.token = null;
         attempt++;
         await this.sleep((err as CoreError & { retryAfterMs?: number }).retryAfterMs ?? 100 * 2 ** attempt);
       }
     }
   }
 
-  private async once<T>(method: string, path: string, body: unknown, idempotencyKey?: string): Promise<T> {
-    const headers: Record<string, string> = { authorization: `Bearer ${await this.serviceToken()}`, accept: 'application/json' };
+  private async once<T>(method: string, path: string, body: unknown, idempotencyKey: string | undefined, force: boolean): Promise<T> {
+    const headers: Record<string, string> = { authorization: `Bearer ${await this.token(force)}`, accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
     const res = await this.fetch(this.url(path), {
@@ -144,27 +166,6 @@ export class CoreClient {
     const retryAfter = Number(res.headers.get('retry-after'));
     if (retryAfter > 0) err.retryAfterMs = Math.min(retryAfter, 5) * 1_000;
     throw err;
-  }
-
-  private async serviceToken(): Promise<string> {
-    if (this.token && this.token.expiresAt - 30_000 > Date.now()) return this.token.value;
-    // One refresh at a time, shared by concurrent callers.
-    this.tokenPending ??= this.fetchToken().finally(() => (this.tokenPending = null));
-    return this.tokenPending;
-  }
-
-  private async fetchToken(): Promise<string> {
-    const basic = Buffer.from(`${this.opts.clientId}:${this.opts.clientSecret}`).toString('base64');
-    const res = await this.fetch(this.url('/oauth/token'), {
-      method: 'POST',
-      headers: { authorization: `Basic ${basic}`, 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'client_credentials', scope: SCOPES }).toString(),
-      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 3_000),
-    });
-    if (!res.ok) throw new CoreError(res.status, 'token_error', 'client credentials rejected');
-    const t = (await res.json()) as { access_token: string; expires_in: number };
-    this.token = { value: t.access_token, expiresAt: Date.now() + t.expires_in * 1_000 };
-    return t.access_token;
   }
 
   private url(path: string): string {

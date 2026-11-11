@@ -39,13 +39,14 @@ class LedgerController {
         if (!env.PLATFORM_MODE) return null;
         const log = new Logger('PlatformLedger');
         const core = new CoreClient({
-          baseUrl: env.PLATFORM_CORE_URL!,
-          clientId: env.PLATFORM_CLIENT_ID!,
-          clientSecret: env.PLATFORM_CLIENT_SECRET!,
-          currency: env.PLATFORM_CURRENCY,
+          baseUrl: env.CORE_URL!,
+          tokenUrl: env.CORE_TOKEN_URL,
+          clientId: env.CORE_CLIENT_ID!,
+          clientSecret: env.CORE_CLIENT_SECRET!,
+          currency: env.CORE_CURRENCY,
         });
         return new PlatformLedger(ds, local, core, {
-          houseAccountId: env.PLATFORM_HOUSE_ACCOUNT_ID!,
+          houseAccountId: env.CORE_HOUSE_ACCOUNT_ID!,
           onError: (e) => {
             log.warn((e as Error).message);
             Sentry.captureException(e, { tags: { component: 'platform-ledger' } });

@@ -1,9 +1,9 @@
-import { createHmac, createVerify, timingSafeEqual, type KeyObject } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
- * Minimal JWT (RFC 7519) helpers on node:crypto — HS256 for our own sessions and RS256
- * verification for platform-core tokens in PLATFORM_MODE. Kept dependency-free and small
- * enough to audit: alg is pinned per call (never read from the header), exp/nbf/iss/aud checked.
+ * Minimal JWT (RFC 7519) HS256 helpers on node:crypto for our own sessions (standalone mode).
+ * Kept dependency-free and small enough to audit: alg is pinned (never read from the header),
+ * exp/nbf/iss/aud checked. platform-core tokens are verified with @danigil/platform-contracts.
  */
 
 export interface JwtClaims {
@@ -65,27 +65,4 @@ export function verifyHs256(token: string, secret: string, now = Date.now()): Jw
   const given = fromB64url(sig);
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new JwtError('bad signature');
   return checkClaims(payload, {}, now);
-}
-
-/** Unverified header, only to pick a key by `kid`; never trusted for the algorithm. */
-export function jwtHeader(token: string): { kid?: string; alg?: string } {
-  try {
-    return JSON.parse(fromB64url(split(token)[0]).toString('utf8'));
-  } catch {
-    throw new JwtError('malformed header');
-  }
-}
-
-export function verifyRs256(
-  token: string,
-  publicKeyPem: string | KeyObject,
-  opts: { issuer?: string; audience?: string } = {},
-  now = Date.now(),
-): JwtClaims {
-  const [header, payload, sig] = split(token);
-  const h = JSON.parse(fromB64url(header).toString('utf8'));
-  if (h.alg !== 'RS256') throw new JwtError('unexpected alg');
-  const ok = createVerify('RSA-SHA256').update(`${header}.${payload}`).verify(publicKeyPem, fromB64url(sig));
-  if (!ok) throw new JwtError('bad signature');
-  return checkClaims(payload, opts, now);
 }

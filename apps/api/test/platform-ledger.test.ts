@@ -24,6 +24,8 @@ class FakeCore {
   replies = new Map<string, unknown>(); // idempotency key -> original response
   captures = 0;
   down = false;
+  token = 'svc-token';
+  tokenGrants = 0;
   server!: Server;
 
   addUser(userId: string, accountId: string, balance: number): void {
@@ -42,8 +44,13 @@ class FakeCore {
         };
         if (this.down) return send(503, { code: 'unavailable', message: 'down', correlationId: 'x' });
         const url = new URL(req.url!, 'http://core');
-        if (url.pathname === '/oauth/token') return send(200, { access_token: 'svc-token', token_type: 'Bearer', expires_in: 600 });
-        if (req.headers.authorization !== 'Bearer svc-token') return send(401, { code: 'invalid_token', message: '', correlationId: 'x' });
+        if (url.pathname === '/oauth/token') {
+          this.tokenGrants++;
+          // Same response shape the contract's client-credentials provider validates.
+          const scope = new URLSearchParams(raw).get('scope') ?? '';
+          return send(200, { access_token: this.token, token_type: 'Bearer', expires_in: 600, scope });
+        }
+        if (req.headers.authorization !== `Bearer ${this.token}`) return send(401, { code: 'invalid_token', message: '', correlationId: 'x' });
         if (req.method === 'GET' && url.pathname === '/v1/wallet/accounts') {
           const userId = url.searchParams.get('userId');
           const list = [...this.owner].filter(([, u]) => u === userId).map(([id]) => ({ id, kind: 'user_cash', currency: 'EUR', balance: String(this.balances.get(id)) }));
@@ -220,5 +227,13 @@ describe.skipIf(!TEST_DATABASE_URL)('PlatformLedger (real PostgreSQL + fake plat
     ).rejects.toThrow();
     expect(core.balances.get(p.accountId)).toBe(4_000);
     expect([...core.holds.values()].filter((h) => h.accountId === p.accountId).map((h) => h.status)).toEqual(['released']);
+  });
+  it('renews a revoked machine token once and repeats the call with the same idempotency key', async () => {
+    const p = await platformUser('riku', 3_000);
+    const grantsBefore = core.tokenGrants;
+    core.token = `svc-token-rotated-${round}`; // Core revokes the cached token
+    expect(await bet(p.userId, 1_000)).toEqual({ ok: true, balance: 2_000 });
+    expect(core.tokenGrants).toBe(grantsBefore + 1); // exactly one forced renewal
+    expect([...core.holds.values()].filter((h) => h.accountId === p.accountId)).toHaveLength(1);
   });
 });

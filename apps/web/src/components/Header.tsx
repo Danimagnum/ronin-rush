@@ -35,6 +35,7 @@ export function Header({ onSignIn, onSignOut }: { onSignIn: () => void; onSignOu
   const set = useGame((s) => s.set);
   const setBalance = useGame((s) => s.setBalance);
   const [refillMsg, setRefillMsg] = useState<string | null>(null);
+  const platformMode = useGame((s) => s.platformMode);
 
   const low = user && user.balance < 10_000;
 
@@ -88,7 +89,7 @@ export function Header({ onSignIn, onSignOut }: { onSignIn: () => void; onSignOu
                 </div>
                 <div className="text-xs text-mist">{user.username}</div>
               </div>
-              {low && token ? (
+              {low && token && !platformMode ? (
                 <button
                   type="button"
                   onClick={async () => {
@@ -110,6 +111,8 @@ export function Header({ onSignIn, onSignOut }: { onSignIn: () => void; onSignOu
                 Sign out
               </button>
             </div>
+          ) : platformMode ? (
+            <span className="text-xs text-mist">Open Ronin Rush from your platform portal</span>
           ) : (
             <button type="button" onClick={onSignIn} className="rounded-lg bg-kin px-3 py-1.5 text-sm font-semibold text-ai-950 hover:bg-[#e2bf72]">
               Play

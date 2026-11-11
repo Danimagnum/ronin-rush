@@ -6,13 +6,17 @@ import { z } from 'zod';
 import type { Env } from '../config/env';
 import { DATA_SOURCE, ENV } from '../config/tokens';
 import { PostgresLedger } from '../wallet/postgres-ledger';
-import { JwksCache } from '../platform/jwks';
-import { JwtError, jwtHeader, signHs256, verifyHs256, verifyRs256 } from './jwt';
+import { createAuthVerifier } from '@danigil/platform-contracts';
+import { JwtError, signHs256, verifyHs256 } from './jwt';
 
 export interface Principal {
   userId: string;
   username: string;
+  /** Epoch ms after which the token behind this principal must no longer be accepted. */
+  expiresAt?: number;
 }
+
+type AuthVerifier = ReturnType<typeof createAuthVerifier>;
 
 export const Credentials = z.object({
   username: z.string().regex(/^[a-zA-Z0-9_]{3,20}$/, '3-20 letters, digits or _'),
@@ -21,19 +25,23 @@ export const Credentials = z.object({
 
 /**
  * PLATFORM_MODE=false: own users (argon2id passwords, HS256 session tokens, one-click guests).
- * PLATFORM_MODE=true: trusts platform-core RS256 tokens and links each subject to a local
- * shadow user (external_id) so bets and history still have a local owner.
+ * PLATFORM_MODE=true: verifies platform-core user tokens with the contract's verifier (RS256,
+ * JWKS by kid, exact issuer and audience, exp/nbf; machine tokens rejected) and links each
+ * subject to a local shadow user (external_id) so bets and history still have a local owner.
  */
 @Injectable()
 export class AuthService {
-  private readonly jwks: JwksCache | null;
+  /** Created once per process so the remote JWKS cache survives across requests. */
+  private readonly verifier: AuthVerifier | null;
 
   constructor(
     @Inject(ENV) private readonly env: Env,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     private readonly ledger: PostgresLedger,
   ) {
-    this.jwks = env.PLATFORM_JWKS_URL ? new JwksCache(env.PLATFORM_JWKS_URL) : null;
+    this.verifier = env.PLATFORM_MODE
+      ? createAuthVerifier({ issuer: env.CORE_ISSUER!, audience: env.CORE_AUDIENCE!, jwksUrl: env.CORE_JWKS_URL! })
+      : null;
   }
 
   async register(body: unknown) {
@@ -78,9 +86,9 @@ export class AuthService {
   async verify(token: string | undefined | null): Promise<Principal | null> {
     if (!token) return null;
     try {
-      if (this.env.PLATFORM_MODE) return await this.fromPlatformToken(token);
+      if (this.verifier) return await this.fromPlatformToken(this.verifier, token);
       const claims = verifyHs256(token, this.env.JWT_SECRET);
-      return { userId: claims.sub, username: String(claims.username ?? '') };
+      return { userId: claims.sub, username: String(claims.username ?? ''), expiresAt: Number(claims.exp) * 1000 };
     } catch (e) {
       if (e instanceof JwtError) return null;
       throw e;
@@ -99,25 +107,23 @@ export class AuthService {
     return { token, user: { id: p.userId, username: p.username, balance } };
   }
 
-  private async fromPlatformToken(token: string): Promise<Principal> {
-    // Core publishes rotating keys at its JWKS endpoint; a static PEM is the offline fallback.
-    const key = this.jwks
-      ? await this.jwks.key(jwtHeader(token).kid)
-      : this.env.PLATFORM_JWT_PUBLIC_KEY?.replace(/\\n/g, '\n');
-    if (!key) throw new JwtError('no platform signing key configured');
-    const claims = verifyRs256(token, key, {
-      issuer: this.env.PLATFORM_JWT_ISSUER,
-      audience: this.env.PLATFORM_JWT_AUDIENCE,
-    });
-    // Machine tokens (client credentials) never act as players.
-    if (claims.kind !== undefined && claims.kind !== 'user') throw new JwtError('not a user token');
+  private async fromPlatformToken(verifier: AuthVerifier, token: string): Promise<Principal> {
+    let claims: Awaited<ReturnType<AuthVerifier['verifyUser']>>;
+    try {
+      claims = await verifier.verifyUser(token);
+    } catch {
+      // Bad signature, unknown kid, wrong issuer/audience, expired, machine token or JWKS
+      // unreachable: all fail closed as "not authenticated".
+      return Promise.reject(new JwtError('platform token rejected'));
+    }
+    const expiresAt = claims.exp * 1000;
     const [row] = await this.ds.query(`SELECT id, username FROM users WHERE external_id = $1`, [claims.sub]);
-    if (row) return { userId: row.id, username: row.username };
-    const email = typeof claims.email === 'string' ? claims.email : '';
-    const base = (email.split('@')[0] || `p_${claims.sub.slice(0, 8)}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 14);
+    if (row) return { userId: row.id, username: row.username, expiresAt };
+    const base = (claims.email.split('@')[0] || `p_${claims.sub.slice(0, 8)}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 14);
+    const username = `${base}_${claims.sub.slice(0, 4)}`;
     // Money lives in platform-core in this mode; the local account only mirrors bets (grant 0).
-    const u = await this.ledger.createUser({ username: `${base}_${claims.sub.slice(0, 4)}`, externalId: claims.sub, grantCents: 0 });
-    return { userId: u.userId, username: `${base}_${claims.sub.slice(0, 4)}` };
+    const u = await this.ledger.createUser({ username, externalId: claims.sub, grantCents: 0 });
+    return { userId: u.userId, username, expiresAt };
   }
 
   private ownUsersOnly(): void {

@@ -39,6 +39,10 @@ jobs:
       - run: pnpm build
       # Includes the 1,000,000-round fairness distribution test and the 500-concurrent-op ledger test.
       - run: pnpm test
+      # Contract test, named on its own: the events the real engine and ledger persist, validated
+      # with the kit of the pinned @danigil/platform-contracts, plus the relay's schema gate.
+      - name: Event contract (@danigil/platform-contracts)
+        run: pnpm --filter @ronin/api exec vitest run test/contract.test.ts test/outbox-contract.test.ts
 
   e2e:
     name: Playwright (bet → cash out, late cash-out rejected, verify)
@@ -64,11 +68,59 @@ jobs:
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ronin/shared build && pnpm --filter @ronin/api build
-      - run: pnpm --filter @ronin/e2e exec playwright install --with-deps chromium
+      # Browser download only: ubuntu-latest already ships Chrome's system libraries, and the
+      # apt step of --with-deps failed or hung for minutes on the runner's mirrors.
+      - name: Install Chromium
+        timeout-minutes: 8
+        run: pnpm --filter @ronin/e2e exec playwright install chromium
       - run: pnpm test:e2e
       - if: failure()
         uses: actions/upload-artifact@v4
         with: { name: playwright-report, path: e2e/playwright-report, retention-days: 7 }
+
+  kafka:
+    name: Real Kafka broker (publish, contract, consumer group)
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: ronin, POSTGRES_PASSWORD: ronin, POSTGRES_DB: ronin_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ronin" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      TEST_DATABASE_URL: postgres://ronin:ronin@localhost:5432/ronin_test
+      REDIS_URL: redis://localhost:6379
+      KAFKA_E2E_BROKERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - name: Start a single-node Kafka (KRaft, the same image as the NAS)
+        run: |
+          docker run -d --name kafka -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            apache/kafka:3.9.1
+          for i in $(seq 1 60); do
+            docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker logs kafka | tail -50; exit 1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ronin/shared build && pnpm --filter @ronin/api build
+      - run: pnpm --filter @ronin/api exec vitest run test/kafka.e2e.test.ts
+      - if: failure()
+        run: docker logs kafka | tail -80
 
   images:
     name: Docker images (linux/amd64)
@@ -87,19 +139,38 @@ jobs:
         uses: docker/login-action@v3
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ronin-rush-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ronin-rush-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/amd64
           build-args: NEXT_PUBLIC_API_URL=
+          # A plain image manifest (no attestation index): the NAS runs Docker 20.10.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           push: ${{ github.event_name == 'push' }}
+          # Full and short commit (the short one matches the NAS release tags), plus main.
           tags: |
             ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.short }}
             ${{ steps.name.outputs.image }}:main
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+      - if: matrix.target == 'proxy'
+        name: nginx config renders and passes nginx -t (default and custom LISTEN_PORT)
+        run: |
+          docker build --target proxy -t ronin-proxy-check .
+          # nginx resolves upstream names when it loads the config: use addresses that exist here.
+          UP="-e API_UPSTREAM=127.0.0.1:3001 -e WEB_UPSTREAM=127.0.0.1:3000"
+          docker run --rm $UP ronin-proxy-check nginx -t
+          docker run --rm $UP -e LISTEN_PORT=8123 --entrypoint sh ronin-proxy-check -c \
+            '/docker-entrypoint.sh nginx -t && grep -q "listen 8123;" /etc/nginx/conf.d/default.conf'
 
   deploy-config:
     name: Helm chart and Compose files

@@ -41,18 +41,30 @@ export const EnvSchema = z.object({
   CLOCK_SYNC_MS: z.coerce.number().int().positive().default(5_000),
 
   PLATFORM_MODE: bool,
-  PLATFORM_JWT_PUBLIC_KEY: z.string().optional(),
-  /** platform-core JWKS (preferred over a static key: follows key rotation). */
-  PLATFORM_JWKS_URL: z.string().url().optional(),
-  /** platform-core base URL for the wallet and responsible-gaming APIs. */
-  PLATFORM_CORE_URL: z.string().url().optional(),
-  PLATFORM_CLIENT_ID: z.string().optional(),
-  PLATFORM_CLIENT_SECRET: z.string().optional(),
+  /** Service name used as the event `source` and in health reports (platform-infra contract). */
+  SERVICE_NAME: z.string().regex(/^[a-z][a-z0-9-]*$/).default('ronin-rush'),
+  /** platform-core base URL (legacy wallet routes live under /v1/wallet). */
+  CORE_URL: z.string().url().optional(),
+  /** OAuth token endpoint for client credentials; defaults to CORE_URL + /oauth/token. */
+  CORE_TOKEN_URL: z.string().url().optional(),
+  /** Core JWKS, issuer and audience: user tokens are verified against all three (fail closed). */
+  CORE_JWKS_URL: z.string().url().optional(),
+  CORE_ISSUER: z.string().min(1).optional(),
+  CORE_AUDIENCE: z.string().min(1).optional(),
+  CORE_CLIENT_ID: z.string().optional(),
+  CORE_CLIENT_SECRET: z.string().optional(),
   /** Core house account (kind=house) that captured stakes settle into. */
-  PLATFORM_HOUSE_ACCOUNT_ID: z.string().uuid().optional(),
-  PLATFORM_CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
-  PLATFORM_JWT_ISSUER: z.string().optional(),
-  PLATFORM_JWT_AUDIENCE: z.string().optional(),
+  CORE_HOUSE_ACCOUNT_ID: z.string().uuid().optional(),
+  CORE_CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
+  /**
+   * Origins of the platform portal(s) that may hand the embedded game a renewed Core token via
+   * window.postMessage (comma-separated, exact origins). Empty: no in-page renewal.
+   */
+  PORTAL_ORIGINS: z
+    .string()
+    .default('')
+    .transform((v) => v.split(',').map((o) => o.trim()).filter(Boolean))
+    .pipe(z.array(z.string().url())),
 
   JWT_SECRET: z.string().min(16).default('dev-only-insecure-secret-change-me'),
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(7 * 24 * 3600),
@@ -74,10 +86,7 @@ export const EnvSchema = z.object({
     ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'must be set in production' });
   }
   if (env.PLATFORM_MODE) {
-    if (!env.PLATFORM_JWKS_URL && !env.PLATFORM_JWT_PUBLIC_KEY) {
-      ctx.addIssue({ code: 'custom', path: ['PLATFORM_JWKS_URL'], message: 'PLATFORM_JWKS_URL or PLATFORM_JWT_PUBLIC_KEY is required when PLATFORM_MODE=true' });
-    }
-    for (const k of ['PLATFORM_CORE_URL', 'PLATFORM_CLIENT_ID', 'PLATFORM_CLIENT_SECRET', 'PLATFORM_HOUSE_ACCOUNT_ID'] as const) {
+    for (const k of ['CORE_URL', 'CORE_JWKS_URL', 'CORE_ISSUER', 'CORE_AUDIENCE', 'CORE_CLIENT_ID', 'CORE_CLIENT_SECRET', 'CORE_HOUSE_ACCOUNT_ID'] as const) {
       if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: 'required when PLATFORM_MODE=true' });
     }
   }
@@ -85,8 +94,28 @@ export const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 
+/** Pre-0.2.0 names, still accepted so existing deployments keep working. The CORE_* name wins. */
+export const LEGACY_ENV_ALIASES: Record<string, string> = {
+  CORE_URL: 'PLATFORM_CORE_URL',
+  CORE_JWKS_URL: 'PLATFORM_JWKS_URL',
+  CORE_ISSUER: 'PLATFORM_JWT_ISSUER',
+  CORE_AUDIENCE: 'PLATFORM_JWT_AUDIENCE',
+  CORE_CLIENT_ID: 'PLATFORM_CLIENT_ID',
+  CORE_CLIENT_SECRET: 'PLATFORM_CLIENT_SECRET',
+  CORE_HOUSE_ACCOUNT_ID: 'PLATFORM_HOUSE_ACCOUNT_ID',
+  CORE_CURRENCY: 'PLATFORM_CURRENCY',
+};
+
+export function withLegacyAliases(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...source };
+  for (const [name, legacy] of Object.entries(LEGACY_ENV_ALIASES)) {
+    if (!out[name] && out[legacy]) out[name] = out[legacy];
+  }
+  return out;
+}
+
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = EnvSchema.safeParse(source);
+  const parsed = EnvSchema.safeParse(withLegacyAliases(source));
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid environment:\n${issues}`);
