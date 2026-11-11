@@ -33,6 +33,7 @@ export function connect(token: string | null): void {
     for (const e of events) applyEvent(e);
   });
   socket.on(SOCKET_EVENTS.balance, (b: { balance: number }) => useGame.getState().setBalance(b.balance));
+  socket.on(SOCKET_EVENTS.authExpired, () => useGame.getState().set({ sessionExpired: true }));
 }
 
 export function disconnect(): void {
@@ -89,4 +90,10 @@ export const commands = {
   /** No multiplier is sent: the server decides it from the moment it received this message. */
   cashOut: (roundId: number) => command<BetAck>(SOCKET_EVENTS.cashout, { roundId, idempotencyKey: key() }),
   subscribeSystem: (on: boolean) => socket?.emit(SOCKET_EVENTS.systemSubscribe, on),
+  /** Swaps the socket's token for a renewed one; the round and any bet carry on. */
+  renewAuth: async (token: string) => {
+    const res = await command<{ ok: true; expiresAt: number | null } | { ok: false; error: CommandError }>(SOCKET_EVENTS.authRenew, { token });
+    if (res.ok) useGame.getState().set({ token, sessionExpiresAt: res.expiresAt, sessionExpired: false });
+    return res;
+  },
 };

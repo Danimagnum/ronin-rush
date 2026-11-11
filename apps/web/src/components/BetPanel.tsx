@@ -23,10 +23,14 @@ const ERRORS: Record<string, string> = {
   TIMEOUT: 'The server did not answer in time. Your bet list will refresh with the real state.',
   NOT_LEADER: 'The game server is switching over. Try again in a second.',
   UNAUTHENTICATED: 'Sign in or play as a guest first.',
+  AUTH_EXPIRED: 'Your platform session expired. It renews on its own while the portal is open; otherwise reopen the game from the portal.',
+  IDENTITY_MISMATCH: 'The portal sent a token for a different player. Reopen the game from the portal.',
 };
 
 export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
   const user = useGame((s) => s.user);
+  const platformMode = useGame((s) => s.platformMode);
+  const sessionExpired = useGame((s) => s.sessionExpired);
   const round = useGame((s) => s.round);
   const myBet = useGame(selectMyBet);
   const [amount, setAmount] = useState(1_000);
@@ -67,7 +71,8 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
   }, [canCashOut, myBet]);
 
   async function act() {
-    if (!user) return onNeedAuth();
+    if (!user) return platformMode ? undefined : onNeedAuth();
+    if (sessionExpired) return setError(ERRORS.AUTH_EXPIRED!);
     setError(null);
     if (canCashOut && round) {
       setBusy(true);
@@ -98,7 +103,10 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
   }, []);
 
   const button = (() => {
+    if (!user && platformMode) return { label: 'Sign in on the platform', sub: 'open Ronin Rush from your portal', tone: 'mist' as const, disabled: true };
     if (!user) return { label: 'Play as guest', sub: 'or sign in', tone: 'kin' as const, disabled: false };
+    if (sessionExpired && !myBet?.autoX100)
+      return { label: 'Session expired', sub: 'waiting for the portal to renew it', tone: 'mist' as const, disabled: true };
     if (canCashOut) return { label: 'Cash out', sub: null, tone: 'kin' as const, disabled: false, live: true };
     if (myBet?.status === 'CASHED_OUT')
       return { label: `Cashed out at ${mult(myBet.cashoutX100!)}`, sub: `${signedMoney(myBet.payout! - myBet.amount)} ${CURRENCY}`, tone: 'take' as const, disabled: true };
@@ -221,7 +229,8 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
             </span>
             {button.sub ? <span className="mt-0.5 text-sm opacity-80">{button.sub}</span> : null}
           </button>
-          <p className="mt-2 hidden text-center text-xs text-mist sm:block">
+          {/* Kept in the layout (invisible) so the panel does not jump between phases. */}
+          <p className={`mt-2 hidden text-center text-xs text-mist sm:block ${button.disabled && !canCashOut ? 'invisible' : ''}`}>
             Press <kbd className="rounded bg-ai-700 px-1.5 py-0.5 text-washi">Space</kbd> to {canCashOut ? 'cash out' : 'bet'}
           </p>
         </div>

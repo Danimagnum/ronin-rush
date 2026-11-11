@@ -151,6 +151,10 @@ export const CommandError = z.enum([
   'ROUND_MISMATCH',
   'NOT_LEADER',
   'UNAUTHENTICATED',
+  /** The token behind this socket has expired; renew it (auth:renew) before the next command. */
+  'AUTH_EXPIRED',
+  /** auth:renew carried a valid token for a different player than the one on this socket. */
+  'IDENTITY_MISMATCH',
   'RATE_LIMITED',
   'TIMEOUT',
 ]);
@@ -175,7 +179,24 @@ export const SOCKET_EVENTS = {
   cashout: 'bet:cashout',
   /** client -> server: join/leave the System view metrics room */
   systemSubscribe: 'system:subscribe',
+  /** client -> server, with ack: swap this socket's token for a renewed one, without reconnecting */
+  authRenew: 'auth:renew',
+  /** server -> client: the socket's token reached its expiry; commands are refused until renewed */
+  authExpired: 'auth:expired',
 } as const;
+
+export const AuthRenewCommand = z.object({ token: z.string().min(1).max(8192) });
+export type AuthRenewCommand = z.infer<typeof AuthRenewCommand>;
+
+/** GET /api/config: what the web app needs to know about this deployment. */
+export const PublicConfig = z.object({
+  platformMode: z.boolean(),
+  /** Standalone only: one-click guest accounts. */
+  guestAllowed: z.boolean(),
+  /** Origins allowed to hand the game a renewed platform token (window.postMessage). */
+  portalOrigins: z.array(z.string()),
+});
+export type PublicConfig = z.infer<typeof PublicConfig>;
 
 export const SettledRoundSummary = z.object({
   roundId: z.number().int().positive(),
@@ -196,6 +217,8 @@ export const ServerHello = z.object({
   history: z.array(SettledRoundSummary),
   user: SessionUser.nullable(),
   fairness: z.object({ commitment: seedHex, publicSalt: z.string() }),
+  /** When the token behind this connection stops being accepted (epoch ms), null if anonymous. */
+  session: z.object({ platformMode: z.boolean(), expiresAt: epochMs.nullable() }),
 });
 export type ServerHello = z.infer<typeof ServerHello>;
 

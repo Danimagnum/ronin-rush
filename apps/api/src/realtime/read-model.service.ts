@@ -89,6 +89,7 @@ export class ReadModel implements OnModuleInit {
       history,
       user: principal && balance !== null ? { id: principal.userId, username: principal.username, balance } : null,
       fairness: { commitment: this.runner.chain.commitment, publicSalt: this.runner.chain.publicSalt },
+      session: { platformMode: this.env.PLATFORM_MODE, expiresAt: principal?.expiresAt ?? null },
     };
   }
 }

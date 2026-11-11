@@ -7,6 +7,7 @@ import type { Env } from '../config/env';
 import { DATA_SOURCE, ENV, PLATFORM_LEDGER, REDIS } from '../config/tokens';
 import type { PlatformLedger } from '../platform/platform-ledger';
 import { PostgresLedger } from '../wallet/postgres-ledger';
+import type { PublicConfig } from '@ronin/shared';
 import { AuthService } from './auth.service';
 
 @Controller('api/auth')
@@ -87,5 +88,16 @@ export class MeController {
     const ok = await this.redis.set(`ronin:refill:${p.userId}:${slot}`, '1', 'EX', 600, 'NX');
     if (!ok) throw tooMany('one refill per 10 minutes');
     return { balance: await this.ledger.grant(p.userId, this.env.SIGNUP_GRANT_CENTS, `grant:refill:${p.userId}:${slot}`) };
+  }
+}
+
+/** Public deployment facts for the web app (no secrets): platform mode and allowed portals. */
+@Controller('api/config')
+export class ConfigController {
+  constructor(@Inject(ENV) private readonly env: Env) {}
+
+  @Get()
+  config(): PublicConfig {
+    return { platformMode: this.env.PLATFORM_MODE, guestAllowed: !this.env.PLATFORM_MODE, portalOrigins: this.env.PORTAL_ORIGINS };
   }
 }

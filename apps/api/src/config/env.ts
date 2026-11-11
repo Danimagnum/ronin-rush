@@ -56,6 +56,15 @@ export const EnvSchema = z.object({
   /** Core house account (kind=house) that captured stakes settle into. */
   CORE_HOUSE_ACCOUNT_ID: z.string().uuid().optional(),
   CORE_CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
+  /**
+   * Origins of the platform portal(s) that may hand the embedded game a renewed Core token via
+   * window.postMessage (comma-separated, exact origins). Empty: no in-page renewal.
+   */
+  PORTAL_ORIGINS: z
+    .string()
+    .default('')
+    .transform((v) => v.split(',').map((o) => o.trim()).filter(Boolean))
+    .pipe(z.array(z.string().url())),
 
   JWT_SECRET: z.string().min(16).default('dev-only-insecure-secret-change-me'),
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(7 * 24 * 3600),

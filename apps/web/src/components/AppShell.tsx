@@ -5,7 +5,8 @@ import { Header } from './Header';
 import { ResponsibleGaming } from './ResponsibleGaming';
 import { DuelAudio } from '@/game/audio';
 import { api, type AuthResponse } from '@/lib/api';
-import { connect, disconnect } from '@/lib/realtime';
+import { commands, connect, disconnect } from '@/lib/realtime';
+import { startPortalHandover, type PortalHandover } from '@/lib/portal';
 import { loadPref, loadSession, savePref, saveSession, takePlatformToken } from '@/lib/session';
 import { useGame } from '@/lib/store';
 import { createContext, useContext } from 'react';
@@ -45,6 +46,42 @@ export function AppShell({ children }: { children: ReactNode }) {
         connect(null);
       });
     return () => disconnect();
+  }, [set, setAuth]);
+
+  // PLATFORM_MODE: the portal that embeds the game hands over renewed Core tokens (lib/portal.ts).
+  useEffect(() => {
+    let handover: PortalHandover | null = null;
+    let unsubscribe = () => {};
+    const onPortalToken = async (token: string) => {
+      const res = await commands.renewAuth(token); // same socket: the round and any bet carry on
+      if (!res.ok) return;
+      const user = await api.me(token).catch(() => null);
+      if (user) {
+        setAuth(token, user);
+        saveSession({ token, username: user.username });
+      }
+    };
+    api
+      .config()
+      .then((cfg) => {
+        set({ platformMode: cfg.platformMode, guestAllowed: cfg.guestAllowed });
+        if (!cfg.platformMode) return;
+        handover = startPortalHandover({ origins: cfg.portalOrigins, onToken: (t) => void onPortalToken(t) });
+        // Signed in: ask ~2 min before expiry. Not signed in: ask the portal right away.
+        const plan = () => {
+          const s = useGame.getState();
+          handover?.schedule(s.user ? s.sessionExpiresAt : Date.now());
+        };
+        plan();
+        unsubscribe = useGame.subscribe((s, prev) => {
+          if (s.sessionExpiresAt !== prev.sessionExpiresAt || s.user?.id !== prev.user?.id) plan();
+        });
+      })
+      .catch(() => set({ platformMode: false }));
+    return () => {
+      handover?.stop();
+      unsubscribe();
+    };
   }, [set, setAuth]);
 
   // Session timer survives reloads within the same tab session window.

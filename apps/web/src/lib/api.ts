@@ -1,4 +1,4 @@
-import type { SessionUser, SettledRoundSummary } from '@ronin/shared';
+import type { PublicConfig, SessionUser, SettledRoundSummary } from '@ronin/shared';
 import { API_URL } from './config';
 
 export class ApiError extends Error {
@@ -67,6 +67,7 @@ export const api = {
   myBets: (token: string) => request<MyBet[]>('/api/me/bets?limit=100', { token }),
   refill: (token: string) => request<{ balance: number }>('/api/me/refill', { method: 'POST', token }),
   fairness: () => request<Fairness>('/api/fairness'),
+  config: () => request<PublicConfig>('/api/config'),
   leaderboard: () =>
     request<{ date: string; bestMultiplier: LeaderboardEntry[]; biggestWin: LeaderboardEntry[] }>('/api/leaderboard'),
 };

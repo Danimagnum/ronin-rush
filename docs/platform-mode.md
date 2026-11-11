@@ -62,6 +62,7 @@ CORE_HOUSE_ACCOUNT_ID=<uuid of Core's house account>
 CORE_CURRENCY=EUR
 # CORE_TOKEN_URL defaults to CORE_URL/oauth/token. The pre-0.2.0 PLATFORM_* names still work.
 KAFKA_BROKERS=kafka:9092                         # the platform's broker
+PORTAL_ORIGINS=https://portal.example            # who may hand over renewed tokens (postMessage)
 ```
 
 Provisioning in Core (operator):
@@ -72,9 +73,39 @@ Provisioning in Core (operator):
 
 Players arrive from a platform page that opens the game with `#platform_token=<Core user JWT>`.
 The fragment never reaches a server or a `Referer`, and the web app removes it from the address
-bar immediately. Core user tokens are short-lived (10 minutes). The socket session is
-authenticated at the handshake, and a longer stay on REST pages needs the portal to hand over a
-fresh token. A proper refresh flow is the next step.
+bar immediately.
+
+## Token expiry and renewal
+
+Core user access tokens live 600 s, and the game never holds a refresh token: the portal owns
+the session (`@danigil/platform-contracts` 0.2.0, `docs/auth.md`). Ronin's side:
+
+- **No acceptance past `exp`.** Each socket remembers its token's expiry. At that moment the
+  server emits `auth:expired`; commands (bet, cash-out) are refused with `AUTH_EXPIRED` from then
+  on. The socket stays open, so the player keeps watching the round.
+- **Expiry never touches money already committed.** A bet placed with a valid token is settled by
+  the server at the round outcome, auto cash-out included (covered by
+  `apps/api/test/auth-renewal.e2e.test.ts`, where the server pays a 1.30x auto cash-out after the
+  token lapsed).
+- **Renewal without reconnecting.** `auth:renew { token }` (with ack) swaps the socket's token.
+  The new token must verify and belong to the same player (`IDENTITY_MISMATCH` otherwise); an
+  anonymous socket may sign in this way.
+
+The hand-over from the portal is Ronin-specific (the package deliberately defines none), two
+`window.postMessage` messages:
+
+| Direction | Message | When |
+|---|---|---|
+| game → portal | `{ type: 'ronin:token-request', expiresAt }` | 2 min before expiry, then every 20 s until answered; at once if not signed in |
+| portal → game | `{ type: 'ronin:token', token }` | a renewed Core access token |
+
+The game only accepts messages from the exact origins in `PORTAL_ORIGINS` (served by
+`GET /api/config`) and posts requests to each of those origins explicitly, never to `*`. The
+portal is the window that embeds the game in an iframe, or the one that opened it. **Not yet
+verified:** no portal implements the other end of this protocol today.
+
+In platform mode the web app hides guest play, sign-up, password sign-in and the play-money
+refill: identity and balances belong to Core.
 
 Tested in `apps/api/test/platform-ledger.test.ts`, against real Postgres and an HTTP stand-in for
 Core that follows the wallet contract. The tests cover a hold, then a capture with payout; a

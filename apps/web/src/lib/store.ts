@@ -31,6 +31,13 @@ export interface GameState {
   system: SystemMetrics | null;
   betsHistory: number[];
   sessionStartedAt: number;
+  /** Deployment facts from GET /api/config (null until loaded). */
+  platformMode: boolean | null;
+  guestAllowed: boolean;
+  /** When the server stops accepting this connection's token (epoch ms); null if anonymous. */
+  sessionExpiresAt: number | null;
+  /** The server said the token lapsed: commands are refused until a renewed token arrives. */
+  sessionExpired: boolean;
 
   applyHello: (h: ServerHello) => void;
   applyEvent: (e: RoundEvent) => void;
@@ -68,6 +75,10 @@ export const useGame = create<GameState>((set, get) => ({
   system: null,
   betsHistory: [],
   sessionStartedAt: Date.now(),
+  platformMode: null,
+  guestAllowed: true,
+  sessionExpiresAt: null,
+  sessionExpired: false,
 
   applyHello: (h) =>
     set({
@@ -77,6 +88,8 @@ export const useGame = create<GameState>((set, get) => ({
       history: h.history,
       fairness: h.fairness,
       user: h.user ?? get().user,
+      sessionExpiresAt: h.session.expiresAt,
+      sessionExpired: h.session.expiresAt !== null && h.session.expiresAt <= Date.now(),
     }),
 
   applyEvent: (e) => {
