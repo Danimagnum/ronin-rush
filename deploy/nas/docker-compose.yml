@@ -66,6 +66,14 @@ services:
       NODE_OPTIONS: --max-old-space-size=256
     network_mode: "service:redis"
     mem_limit: 384m
+    # Cold start on the NAS (Celeron, HDD) spends ~90 s just loading modules (measured 2026-11-11),
+    # so the image's 40 s start period marked it unhealthy before it could listen.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -79,6 +87,12 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=128
     mem_limit: 192m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
     logging: *logging
 
   proxy:

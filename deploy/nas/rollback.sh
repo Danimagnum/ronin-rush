@@ -17,6 +17,6 @@ set_tag "$TAG"
 [ -n "$CUR" ] && [ "$CUR" != "$TAG" ] && echo "$CUR" > .previous-tag
 log "rolling back $CUR → $TAG"
 dc $(kafka_profile) up -d --remove-orphans
-wait_healthy api 180 || die "API not healthy after rollback: sudo docker-compose -p $PROJECT logs --tail 80 api"
+wait_healthy api 420 || die "API not healthy after rollback: sudo docker-compose -p $PROJECT logs --tail 80 api"
 sh ./smoke.sh
 log "now running $TAG"

@@ -37,7 +37,7 @@ fi
 set_tag "$TAG"
 log "starting tag $TAG"
 dc $(kafka_profile) up -d --remove-orphans
-wait_healthy api 180 || die "API did not become healthy: sudo docker-compose -p $PROJECT logs --tail 80 api  (rollback: sudo sh rollback.sh)"
+wait_healthy api 420 || die "API did not become healthy: sudo docker-compose -p $PROJECT logs --tail 80 api  (rollback: sudo sh rollback.sh)"
 wait_healthy proxy 60 || die "proxy did not become healthy (rollback: sudo sh rollback.sh)"
 sh ./smoke.sh
 log "deployed $TAG (previous: ${PREV:-none})"

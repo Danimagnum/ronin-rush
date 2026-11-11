@@ -147,6 +147,9 @@ broker is down the game is unaffected, and events wait in the outbox.
   ```sh
   sudo docker exec ronin-rush_api_1 node -e "require('net').connect(5432,'127.0.0.1').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log(e.message);process.exit(1)})"
   ```
+- **API unhealthy on the first start, then healthy minutes later.** A cold start on the NAS
+  spends about 90 s just loading modules (Sentry ~40 s, Nest, TypeORM), with no log output until
+  Nest starts. The NAS compose gives the API a 300 s start period and `deploy.sh` waits up to 7 min.
 - **Blank iframe:** the browser console shows `frame-ancestors` if the embedding page isn't
   listed in `FRAME_ANCESTORS` in `.env`. Add it and run `sudo docker-compose -p ronin-rush up -d proxy`.
 - **Funnel:** `tailscale funnel status`. To remove only this route:
