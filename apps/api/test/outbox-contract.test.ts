@@ -6,7 +6,6 @@ import { loadEnv } from '../src/config/env';
 import { appendOutbox } from '../src/db/outbox';
 import { withTransaction } from '../src/db/tx';
 import { OutboxRelay, validateOutboxRow } from '../src/events/outbox-relay.service';
-import type { RoundRunner } from '../src/round/round-runner.service';
 import { TEST_DATABASE_URL, freshSchema } from './db';
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -78,7 +77,7 @@ describe.skipIf(!TEST_DATABASE_URL || !REDIS_URL)('OutboxRelay sets invalid even
     ds = await freshSchema('t_outbox_contract');
     redis = new Redis(REDIS_URL!, { db: 11 });
     const env = loadEnv({ KAFKA_BROKERS: '', SERVICE_NAME: 'ronin-rush' });
-    relay = new OutboxRelay(env, ds, redis, { engine: null, platform: null } as unknown as RoundRunner);
+    relay = new OutboxRelay(env, ds, redis);
   });
   afterAll(async () => {
     redis?.disconnect();

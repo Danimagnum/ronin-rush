@@ -5,9 +5,7 @@ import { Kafka, logLevel, type Producer } from 'kafkajs';
 import type { DataSource } from 'typeorm';
 import type { Env } from '../config/env';
 import { DATA_SOURCE, ENV, REDIS } from '../config/tokens';
-import { appendOutbox } from '../db/outbox';
 import { updateReturning, withTransaction } from '../db/tx';
-import { RoundRunner } from '../round/round-runner.service';
 
 export const KAFKA_TAP_KEY = 'ronin:kafka:tap';
 const BATCH = 200;
@@ -37,7 +35,6 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
   private producer: Producer | null = null;
   private connected = false;
   private timer: NodeJS.Timeout | null = null;
-  private healthTimer: NodeJS.Timeout | null = null;
   private running = false;
   published = 0;
   rejected = 0;
@@ -46,11 +43,23 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
     @Inject(ENV) private readonly env: Env,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     @Inject(REDIS) private readonly redis: Redis,
-    private readonly runner: RoundRunner,
   ) {}
 
   get mode(): 'kafka' | 'dry-run' {
     return this.env.KAFKA_BROKERS ? 'kafka' : 'dry-run';
+  }
+
+  get kafkaConnected(): boolean {
+    return this.connected;
+  }
+
+  /** Rows waiting to be published (not rejected) and the age of the oldest, for /metrics. */
+  async backlog(): Promise<{ pending: number; oldestSeconds: number }> {
+    const [row] = await this.ds.query(
+      `SELECT COUNT(*)::int AS n, COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::float AS oldest
+       FROM outbox WHERE published_at IS NULL AND rejected_at IS NULL`,
+    );
+    return { pending: row.n, oldestSeconds: Math.round(Number(row.oldest) * 1000) / 1000 };
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -73,12 +82,10 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
       this.log.log('KAFKA_BROKERS empty: dry-run mode (outbox marked + tapped, nothing sent)');
     }
     this.timer = setInterval(() => void this.tick(), 250);
-    if (this.env.PLATFORM_MODE) this.healthTimer = setInterval(() => void this.reportHealth(), 30_000);
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
-    if (this.healthTimer) clearInterval(this.healthTimer);
     await this.producer?.disconnect().catch(() => undefined);
   }
 
@@ -142,22 +149,6 @@ export class OutboxRelay implements OnApplicationBootstrap, OnApplicationShutdow
     } finally {
       this.running = false;
     }
-  }
-
-  /** system.health.reported.v1 (platform contract): status, p95 latency (ms) and error rate (0-1). */
-  private async reportHealth(): Promise<void> {
-    const redisUp = await this.redis.ping().then(() => true).catch(() => false);
-    const loop = this.runner.engine?.metrics().loopLatencyMs;
-    const core = this.runner.platform?.core ?? null;
-    const errorRate = core && core.calls ? Math.min(1, core.failures / core.calls) : 0;
-    await withTransaction(this.ds, (q) =>
-      appendOutbox(q, 'system.health.reported.v1', this.env.INSTANCE_ID, {
-        service: this.env.SERVICE_NAME,
-        status: !redisUp ? 'unhealthy' : errorRate > 0.05 ? 'degraded' : 'healthy',
-        latencyP95: Math.round(Math.max(loop?.p99 ?? 0, core?.p95() ?? 0)),
-        errorRate: Math.round(errorRate * 1000) / 1000,
-      }),
-    ).catch(() => undefined);
   }
 }
 

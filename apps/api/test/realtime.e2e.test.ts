@@ -234,6 +234,23 @@ describe.skipIf(!enabled)('real-time API, two instances (e2e)', () => {
     r.disconnect();
   });
 
+  it('platform probes: /health/live, /health/ready and /metrics on both instances', async () => {
+    for (const port of [leaderPort, relayPort]) {
+      expect((await http(port, '/health/live')).status).toBe(200);
+      const ready = await http(port, '/health/ready');
+      expect(ready.status).toBe(200);
+      expect(ready.body).toMatchObject({ ready: true, checks: { postgres: { ok: true }, redis: { ok: true } } });
+    }
+    const leaderText = await (await fetch(`http://127.0.0.1:${leaderPort}/metrics`)).text();
+    expect(leaderText).toMatch(/^ronin_leader 1$/m);
+    expect(leaderText).toMatch(/^ronin_bets_total [1-9]\d*$/m); // bots have bet by now
+    expect(leaderText).toMatch(/^http_requests_total\{method="GET",route="\/health\/ready",status_code="200"\} \d+$/m);
+    expect(leaderText).toMatch(/^ronin_outbox_lag_seconds \d/m);
+    const relayText = await (await fetch(`http://127.0.0.1:${relayPort}/metrics`)).text();
+    expect(relayText).toMatch(/^ronin_leader 0$/m);
+    expect(relayText).toMatch(/^ronin_bets_total 0$/m); // followers never count, so replicas sum correctly
+  });
+
   it('system view: a socket on the relay receives the leader\'s live metrics', async () => {
     const metrics = await new Promise<Record<string, any>>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('no system metrics')), 5_000);
