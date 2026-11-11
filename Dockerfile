@@ -58,7 +58,7 @@ CMD ["node", "apps/web/server.js"]
 # Same-origin entry point: web app, REST API and Socket.IO behind one port.
 FROM nginx:1.27-alpine AS proxy
 COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
-ENV API_UPSTREAM=api:3001 WEB_UPSTREAM=web:3000 \
+ENV LISTEN_PORT=8080 API_UPSTREAM=api:3001 WEB_UPSTREAM=web:3000 \
     FRAME_ANCESTORS="https://danielgil.eu https://www.danielgil.eu"
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD wget -qO- http://127.0.0.1:8080/nginx-health >/dev/null || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD wget -qO- "http://127.0.0.1:${LISTEN_PORT}/nginx-health" >/dev/null || exit 1

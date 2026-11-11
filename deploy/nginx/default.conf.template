@@ -18,7 +18,8 @@ upstream ronin_web {
 }
 
 server {
-  listen 8080;
+  # LISTEN_PORT (default 8080): configurable for stacks that share one network namespace.
+  listen ${LISTEN_PORT};
   server_name _;
   server_tokens off;
   client_max_body_size 64k;

@@ -293,7 +293,9 @@ settlements). `GET /health` keeps the summary used by Docker, nginx and the smok
 ## Platform integration: verified and not verified
 
 `PLATFORM_MODE=true` runs Ronin inside the platform (Core identity and wallet, platform Kafka);
-see [`docs/platform-mode.md`](docs/platform-mode.md). Standalone stays the default.
+see [`docs/platform-mode.md`](docs/platform-mode.md). Standalone stays the default. What
+platform-infra needs to run it (services, database, topics, Core client, Prometheus, memory
+budget) is in [`docs/platform-infra-additions.md`](docs/platform-infra-additions.md).
 
 **Verified** (automated, in CI unless noted):
 

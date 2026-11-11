@@ -65,6 +65,9 @@ KAFKA_BROKERS=kafka:9092                         # the platform's broker
 PORTAL_ORIGINS=https://portal.example            # who may hand over renewed tokens (postMessage)
 ```
 
+For running it inside platform-infra (compose services, database and role, topics, Core client,
+Prometheus, NAS staging, memory budget) see [`platform-infra-additions.md`](platform-infra-additions.md).
+
 Provisioning in Core (operator):
 
 1. Register a service client `ronin-rush` with scopes `wallet:legacy:read wallet:legacy:write`.
