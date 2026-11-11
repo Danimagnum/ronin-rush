@@ -116,3 +116,69 @@ retried bet creating one hold; insufficient funds and responsible-gaming refusal
 nothing; Core down during a cash-out, with the decision kept and the capture applied exactly
 once when Core is back; a mixed round where platform losses are captured and bot losses posted
 locally; and a hold released when the bet can't be recorded.
+
+## Verified against a real platform-core (provisional)
+
+`apps/api/test/core-real.e2e.test.ts` runs a Ronin API process in platform mode against a real
+Core API process, with a fault-injecting HTTP proxy between them. **Core version: platform-core
+`main` at commit `71e2e50`, built from source** (Core had no tag yet; repeat this suite with the
+first tag). Ronin uses Core's **legacy** wallet routes (`/v1/wallet`, atomic capture with
+`payoutAmount`), which is what it really uses today. This is **provisional**: when Core offers
+the equivalent on `/api/v1` (next section), Ronin migrates and the suite is repeated.
+
+| Scenario | What is checked |
+|---|---|
+| Whole round | Stake held in Core at bet time (balance drops in Core, not in Ronin), one hold per bet with reference `ronin:<round>:<bet>`, settled by one atomic capture; Core balance = deposit − stake + payout |
+| Core down mid-round | Core is killed (SIGKILL) while the round runs: the round ends normally, the cash-out decision is kept, the settlement stays PENDING with failed attempts, `/health/ready` stays 200; Core restarted → settled once, one hold captured, Core balance exact |
+| Lost responses | The proxy lets Core commit and then drops the answer, for the hold and for the capture: Ronin retries with the same `Idempotency-Key`, Core replays; one hold, one capture, payout credited once |
+| Self-exclusion mid-session | The player self-excludes in Core during a round: that round's bet still settles; the next bet is refused with `RESPONSIBLE_GAMING_BLOCKED` and nothing is held |
+
+Mutation check: retrying with a new idempotency key makes Core create two holds, and the suite
+fails. Test fixtures: players get `kyc_status = 'verified'` directly in Core's database (Core's
+KYC needs document uploads to object storage) and money through Core's test deposit endpoint.
+No wallet grant is inserted. Core's seed only creates `local-service`, so the `ronin` client is
+inserted with Core's own `hashSecret` (see `platform-infra-additions.md`, section 5).
+
+Run it (Postgres and Redis local, Core migrated and seeded, `ronin` client created):
+
+```sh
+CORE_E2E_DIR=/path/to/platform-core CORE_E2E_ENV=/path/to/core.env CORE_E2E_SECRET=<ronin secret> \
+TEST_DATABASE_URL=postgres://... REDIS_URL=redis://localhost:6379 \
+pnpm --filter @ronin/api exec vitest run test/core-real.e2e.test.ts
+```
+
+Not in CI: Core's image is private.
+
+## Migrating to /api/v1: what platform-core is missing
+
+Read in platform-core `71e2e50` (`apps/api/src/wallet/wallet-contract.controller.ts`). For Ronin to
+work on `/api/v1` alone, Core needs:
+
+1. **Paying winnings.** `POST /api/v1/holds/{id}/capture` only accepts an empty body (full
+   capture into the house) and credits nothing back. There is no `/api/v1/payouts` route, and
+   `/api/v1/transfers` only resolves wallets with a `user_id`, so the house account cannot be the
+   source. A cash-out above the stake cannot be paid today.
+2. **Atomic settlement.** Ronin needs "capture the stake and credit the payout" in one Core
+   transaction, as the legacy `capture` with `payoutAmount` does. Partial capture plus a separate
+   payout is not equivalent (contracts 0.2.0, `docs/migration-0.2.0.md`). For example: a capture
+   body with a payout, or a stake-settlement operation like SpotKick's grouped settle.
+3. **Partial capture.** Contract 1.1.0 defines a capture body with `money` that releases the
+   remainder; Core marks it `partial-requires-upgrade` and rejects any body.
+4. **The house account on `/api/v1`.** Either as a valid destination or source for the settlement
+   above, under an explicit policy.
+5. **A grants API.** A service client can only touch a wallet listed in `service_wallet_grants`,
+   and the only way to add a row is SQL. Ronin needs a grant for every player's wallet:
+   provisioning per player (for example when the player opens the game from the portal), with
+   revocation.
+6. **Finding a player's wallet.** `/api/v1` has `GET /wallets/{walletId}/balance` but no lookup
+   from a user id; Ronin only knows the token's `sub`. The legacy `GET /v1/wallet/accounts?userId=`
+   has no `/api/v1` equivalent (a lookup endpoint, or the wallet id in the user token).
+7. **Hold expiry vs. Core outages.** `/api/v1` holds require `expiresAt`. A capture after expiry
+   fails, so a Core outage longer than the expiry would leave a decided cash-out unpayable. It
+   needs either an expiry longer than Ronin's settlement retry horizon, or Core accepting the
+   settlement of a hold that was decided (by its owner) before it expired.
+8. **Scopes for Ronin's client on `/api/v1`.** `wallet:read` and `wallet:write`, together with the
+   grants of point 5. Today it holds only `wallet:legacy:read` and `wallet:legacy:write`.
+
+Holds created on one API cannot be resolved on the other (`/api/v1` resolves only holds with an
+expiry; legacy holds have none), so the migration is a cut-over per deployment, not per bet.

@@ -184,12 +184,17 @@ transaction anyway). Generic `wallet:read`/`wallet:write` do not grant the legac
 - **Interim:** insert the row with Core's own hash function, from a platform-core checkout:
 
   ```sh
-  RONIN_SECRET=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+  export RONIN_SECRET=$(openssl rand -hex 24)
   HASH=$(pnpm exec tsx -e "import('./packages/database/src/password').then(async m => console.log(await m.hashSecret(process.env.RONIN_SECRET)))")
-  psql "$CORE_DATABASE_URL" -v hash="$HASH" -c \
-    "INSERT INTO service_clients(id, secret_hash, scopes) VALUES ('ronin', :'hash', ARRAY['wallet:legacy:read','wallet:legacy:write']) ON CONFLICT (id) DO NOTHING"
+  # psql only substitutes :'hash' in statements read from stdin or a file, not in -c.
+  echo "INSERT INTO service_clients(id, secret_hash, scopes) VALUES ('ronin', :'hash', ARRAY['wallet:legacy:read','wallet:legacy:write']) ON CONFLICT (id) DO NOTHING;" \
+    | psql "$CORE_DATABASE_URL" -v hash="$HASH"
   echo "CORE_CLIENT_SECRET=$RONIN_SECRET" >> .env.ronin   # never commit it
   ```
+
+  This exact sequence was used against platform-core `71e2e50` built from source. Core accepts
+  `Idempotency-Key` values matching `^[\w:.-]{8,128}$`; Ronin's keys (`ronin:hold:…`,
+  `ronin:capture:…`, `ronin:release:…`) comply.
 
 House account for `CORE_HOUSE_ACCOUNT_ID` (created by the seed):
 

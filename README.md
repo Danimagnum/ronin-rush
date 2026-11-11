@@ -311,16 +311,23 @@ budget) is in [`docs/platform-infra-additions.md`](docs/platform-infra-additions
 - Health probes and Prometheus metrics on two real API processes; health events on change.
 - Platform-mode UI (no guest, sign-up or refill): checked by screenshot, not by an automated test.
 
+- Against a **real platform-core** (`main` at `71e2e50`, built from source; manual run, not CI):
+  a whole round, Core killed mid-round, lost responses on hold and capture, and self-exclusion
+  mid-session, with Core balances exact to the cent. Provisional: through Core's legacy wallet
+  routes, which is what Ronin uses today ([details and what Core needs for `/api/v1`](docs/platform-mode.md#migrating-to-apiv1-what-platform-core-is-missing)).
+- Publishing to a **real Kafka broker** (CI job with `apache/kafka:3.9.1`): every topic arrives,
+  validates against the contract, keyed by round, `event-id` header = body id, and Ronin's own
+  consumer group reads it back.
+
 **Not verified yet:**
 
-- Anything against the real platform-core: legacy hold routes, error codes, client provisioning,
-  self-exclusion mid-session, Core down during a round. The contract package does not cover
-  Ronin's legacy routes, so this needs Core itself.
+- Ronin on Core's `/api/v1` endpoints: not possible with Core `71e2e50` (no payout, no atomic
+  settlement, no grants API). See the list in `docs/platform-mode.md`.
+- The same suite against a tagged Core release (Core has no tag yet).
 - The portal side of the token hand-over (`ronin:token-request` / `ronin:token`): no portal
   implements it yet.
-- Publishing to a real Kafka broker from this branch (CI and local runs use dry-run and a fake
-  producer).
-- A second instance inside the platform staging stack on the NAS, and its memory use.
+- A second instance inside the platform staging stack on the NAS, and its memory use: pending
+  until platform-infra adds Ronin (`docs/platform-infra-additions.md`).
 
 ## Asset credits
 
