@@ -69,15 +69,19 @@ describe.skipIf(!enabled)('publishing to a real Kafka broker (e2e)', () => {
     ronin.stderr!.on('data', (d) => (log += d.toString()));
 
     await consumer.connect();
-    // Ronin's own consumer creates the topics; wait for them before subscribing.
+    // Ronin's consumer creates its five topics at start; the shared health topic appears with the
+    // first health report (auto-created on publish). Subscribe only once all six exist.
     const kAdmin = kafka.admin();
     await kAdmin.connect();
-    const end = Date.now() + 60_000;
+    const end = Date.now() + 75_000;
+    let missing = TOPICS;
     while (Date.now() < end) {
       const topics = new Set(await kAdmin.listTopics());
-      if (TOPICS.slice(0, 5).every((t) => topics.has(t))) break;
+      missing = TOPICS.filter((t) => !topics.has(t));
+      if (!missing.length) break;
       await sleep(500);
     }
+    if (missing.length) throw new Error(`topics never appeared: ${missing.join(', ')}\n${log.slice(-2000)}`);
     await kAdmin.disconnect();
     await consumer.subscribe({ topics: TOPICS, fromBeginning: true });
     await consumer.run({
@@ -90,7 +94,7 @@ describe.skipIf(!enabled)('publishing to a real Kafka broker (e2e)', () => {
         });
       },
     });
-  }, 90_000);
+  }, 120_000);
 
   afterAll(async () => {
     await consumer.disconnect().catch(() => undefined);

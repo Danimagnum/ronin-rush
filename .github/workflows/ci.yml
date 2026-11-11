@@ -166,8 +166,10 @@ jobs:
         name: nginx config renders and passes nginx -t (default and custom LISTEN_PORT)
         run: |
           docker build --target proxy -t ronin-proxy-check .
-          docker run --rm ronin-proxy-check nginx -t
-          docker run --rm -e LISTEN_PORT=8123 --entrypoint sh ronin-proxy-check -c \
+          # nginx resolves upstream names when it loads the config: use addresses that exist here.
+          UP="-e API_UPSTREAM=127.0.0.1:3001 -e WEB_UPSTREAM=127.0.0.1:3000"
+          docker run --rm $UP ronin-proxy-check nginx -t
+          docker run --rm $UP -e LISTEN_PORT=8123 --entrypoint sh ronin-proxy-check -c \
             '/docker-entrypoint.sh nginx -t && grep -q "listen 8123;" /etc/nginx/conf.d/default.conf'
 
   deploy-config:
