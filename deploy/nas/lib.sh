@@ -6,12 +6,12 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 PROJECT=ronin-rush
 compose_files() {
-  # PLATFORM_KAFKA=true in .env joins the platform stack's network (see docker-compose.platform-kafka.yml).
+  # The stack shares one network namespace (see docker-compose.yml), which cannot also join another
+  # stack's network, so PLATFORM_KAFKA is not supported on this NAS.
   if [ -f .env ] && grep -q '^PLATFORM_KAFKA=true' .env; then
-    echo "-f docker-compose.yml -f docker-compose.platform-kafka.yml"
-  else
-    echo "-f docker-compose.yml"
+    die "PLATFORM_KAFKA=true is not supported with the shared network namespace; set it to false"
   fi
+  echo "-f docker-compose.yml"
 }
 dc() { docker-compose -p "$PROJECT" $(compose_files) "$@"; }
 log() { printf '\033[36m[ronin]\033[0m %s\n' "$*"; }
@@ -23,7 +23,7 @@ set_tag() {
 }
 kafka_profile() {
   # Start the bundled broker only when .env points at it.
-  if grep -q '^KAFKA_BROKERS=kafka:9092' .env; then echo "--profile kafka"; fi
+  if grep -q '^KAFKA_BROKERS=127.0.0.1:9092' .env; then echo "--profile kafka"; fi
 }
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

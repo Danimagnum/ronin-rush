@@ -5,6 +5,11 @@
 #
 # Only the nginx proxy (3310) and the API (3311, diagnostics) are published, both on loopback;
 # Tailscale Funnel exposes 3310 publicly. Postgres and Redis publish nothing.
+#
+# Networking: on this NAS, TCP between containers on a bridge network times out although DNS
+# resolves (reproduced 2026-11-11: api → postgres/redis/web all TIMEOUT). So every service joins
+# ONE network namespace, owned by this project's redis container, and talks over 127.0.0.1.
+# The namespace is private to ronin-rush; ports are published on the redis service.
 version: "2.4"
 
 x-logging: &logging
@@ -19,6 +24,8 @@ services:
       POSTGRES_USER: ronin
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: ronin
+    network_mode: "service:redis"
+    depends_on: [redis]
     command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "effective_cache_size=192MB"]
     volumes: ["./data/postgres:/var/lib/postgresql/data"]
     mem_limit: 256m
@@ -33,6 +40,8 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    # Owner of the shared namespace: the published ports of the whole stack live here.
+    ports: ["127.0.0.1:3310:8080", "127.0.0.1:3311:3001"]
     volumes: ["./data/redis:/data"]
     mem_limit: 64m
     healthcheck:
@@ -50,12 +59,12 @@ services:
       NODE_ENV: production
       PORT: "3001"
       INSTANCE_ID: nas-api-1
-      DATABASE_URL: postgres://ronin:${POSTGRES_PASSWORD}@postgres:5432/ronin
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://ronin:${POSTGRES_PASSWORD}@127.0.0.1:5432/ronin
+      REDIS_URL: redis://127.0.0.1:6379/0
       REDIS_NAMESPACE: ronin-nas
       DB_POOL_SIZE: "10"
       NODE_OPTIONS: --max-old-space-size=256
-    ports: ["127.0.0.1:3311:3001"]
+    network_mode: "service:redis"
     mem_limit: 384m
     depends_on:
       postgres: { condition: service_healthy }
@@ -65,6 +74,8 @@ services:
   web:
     image: ronin-rush-web:${RONIN_TAG}
     restart: unless-stopped
+    network_mode: "service:redis"
+    depends_on: [redis]
     environment:
       NODE_OPTIONS: --max-old-space-size=128
     mem_limit: 192m
@@ -74,30 +85,32 @@ services:
     image: ronin-rush-proxy:${RONIN_TAG}
     restart: unless-stopped
     environment:
-      API_UPSTREAM: api:3001
-      WEB_UPSTREAM: web:3000
+      API_UPSTREAM: 127.0.0.1:3001
+      WEB_UPSTREAM: 127.0.0.1:3000
       FRAME_ANCESTORS: ${FRAME_ANCESTORS:-https://danielgil.eu https://www.danielgil.eu}
-    ports: ["127.0.0.1:3310:8080"]
+    network_mode: "service:redis"
     mem_limit: 64m
     depends_on:
       api: { condition: service_healthy }
       web: { condition: service_healthy }
     logging: *logging
 
-  # Own single-node Kafka (KRaft), only with `--profile kafka` (≈ 600 MB). Set KAFKA_BROKERS=kafka:9092.
+  # Own single-node Kafka (KRaft), only with `--profile kafka` (≈ 600 MB). Set KAFKA_BROKERS=127.0.0.1:9092.
   # Same image the platform stack already uses on this NAS (apache/kafka 3.9.1), so nothing new to pull.
   kafka:
     image: apache/kafka:3.9.1
     profiles: ["kafka"]
     restart: unless-stopped
+    network_mode: "service:redis"
+    depends_on: [redis]
     environment:
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://127.0.0.1:9092,CONTROLLER://127.0.0.1:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@127.0.0.1:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"

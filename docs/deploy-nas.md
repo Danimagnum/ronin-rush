@@ -111,8 +111,8 @@ Three modes, chosen in `.env`:
 | Mode | `.env` | Extra RAM |
 |---|---|---|
 | Dry run | `KAFKA_BROKERS=` | 0. The outbox is drained and shown, but nothing is sent |
-| Own broker | `KAFKA_BROKERS=kafka:9092` (scripts add `--profile kafka`) | ≤ 640 MB |
-| Platform broker | `KAFKA_BROKERS=<broker>:9092`, `PLATFORM_KAFKA=true`, `PLATFORM_NETWORK=<network>` | 0. **Not usable with the current `platform-staging` stack**, see below |
+| Own broker | `KAFKA_BROKERS=127.0.0.1:9092` (scripts add `--profile kafka`) | ≤ 640 MB |
+| Platform broker | not supported on this NAS (shared network namespace, and see below) | — |
 
 **Why the platform broker is not used here.** On this NAS the `platform-staging` stack runs its
 containers in one shared network namespace (they all sit behind the Redis container) and its Kafka
@@ -137,15 +137,16 @@ broker is down the game is unaffected, and events wait in the outbox.
 
 - **Health and logs:** `sh smoke.sh`, `sudo docker-compose -p ronin-rush ps`,
   `sudo docker-compose -p ronin-rush logs --tail 100 api`.
-- **Database or Redis connections time out although the names resolve.** This was seen with
-  SpotKick on this NAS. Diagnose before changing anything:
+- **Connections between containers time out although the names resolve.** Reproduced on this
+  NAS on 2026-11-11: from the API container, TCP to postgres, redis and web all timed out on the
+  bridge network, while each service was healthy on its own. Like SpotKick and platform-staging,
+  the stack therefore shares one network namespace: postgres, api, web, proxy and kafka use
+  `network_mode: service:redis`, connect through `127.0.0.1`, and the published ports
+  (`127.0.0.1:3310`, `127.0.0.1:3311`) sit on the redis service. The namespace belongs to
+  ronin-rush alone. Check it from inside the API container:
   ```sh
-  sudo docker-compose -p ronin-rush exec api node -e "require('net').connect(5432,'postgres').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log(e.message);process.exit(1)})"
-  sudo docker network inspect ronin-rush_default | grep -E '"Name"|IPv4'
+  sudo docker exec ronin-rush_api_1 node -e "require('net').connect(5432,'127.0.0.1').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log(e.message);process.exit(1)})"
   ```
-  If TCP to the container IP really fails on the bridge, the fallback used for SpotKick is to
-  share one network namespace (`network_mode: service:postgres` for api and redis) and connect
-  through `127.0.0.1`. Apply it only after reproducing the failure.
 - **Blank iframe:** the browser console shows `frame-ancestors` if the embedding page isn't
   listed in `FRAME_ANCESTORS` in `.env`. Add it and run `sudo docker-compose -p ronin-rush up -d proxy`.
 - **Funnel:** `tailscale funnel status`. To remove only this route:

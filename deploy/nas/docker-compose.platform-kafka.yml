@@ -1,4 +1,5 @@
-# NOTE: does not work with the current `platform-staging` stack: its Kafka listens on 127.0.0.1
+# NOTE: unused on the NAS (lib.sh refuses PLATFORM_KAFKA=true): the stack shares one network
+# namespace, which cannot join another network. Also, the current `platform-staging` stack: its Kafka listens on 127.0.0.1
 # inside a shared network namespace. Kept for stacks that expose a normal broker on a bridge network.
 # Optional override: publish to the Kafka of an existing platform stack on the same NAS instead
 # of running our own broker. Joins that stack's network; nothing else is shared.
