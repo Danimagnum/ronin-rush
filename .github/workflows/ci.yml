@@ -78,6 +78,50 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: playwright-report, path: e2e/playwright-report, retention-days: 7 }
 
+  kafka:
+    name: Real Kafka broker (publish, contract, consumer group)
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: ronin, POSTGRES_PASSWORD: ronin, POSTGRES_DB: ronin_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ronin" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      TEST_DATABASE_URL: postgres://ronin:ronin@localhost:5432/ronin_test
+      REDIS_URL: redis://localhost:6379
+      KAFKA_E2E_BROKERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - name: Start a single-node Kafka (KRaft, the same image as the NAS)
+        run: |
+          docker run -d --name kafka -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://localhost:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            apache/kafka:3.9.1
+          for i in $(seq 1 60); do
+            docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker logs kafka | tail -50; exit 1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ronin/shared build && pnpm --filter @ronin/api build
+      - run: pnpm --filter @ronin/api exec vitest run test/kafka.e2e.test.ts
+      - if: failure()
+        run: docker logs kafka | tail -80
+
   images:
     name: Docker images (linux/amd64)
     runs-on: ubuntu-latest
