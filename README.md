@@ -28,7 +28,8 @@ docker compose up --build        # → http://localhost:8080   (2 API replicas, 
 7. [Events (Kafka)](#events-kafka)
 8. [How it scales](#how-it-scales)
 9. [Running it](#running-it) · [Tests](#tests) · [Deployment](#deployment)
-10. [Asset credits](#asset-credits) · [Responsible gaming](#responsible-gaming)
+10. [Platform integration: verified and not verified](#platform-integration-verified-and-not-verified)
+11. [Asset credits](#asset-credits) · [Responsible gaming](#responsible-gaming)
 
 ## Rules
 
@@ -190,11 +191,13 @@ sum of every account balance is exactly zero.
 ## Events (Kafka)
 
 Domain events are versioned: `ronin.round.started.v1`, `ronin.bet.placed.v1`,
-`ronin.bet.cashed_out.v1`, `ronin.round.crashed.v1`, `ronin.round.settled.v1` (and
-`system.health.reported.v1` in platform mode).
+`ronin.bet.cashed_out.v1`, `ronin.round.crashed.v1`, `ronin.round.settled.v1`, plus
+`system.health.reported.v1` every 30 s and on every health status change.
 
 Every message uses the platform envelope (`id` UUID, `type`, `version`, `occurredAt`,
-`source: ronin-rush`, `correlationId`, `data`) from `@danigil/platform-contracts`. They are
+`source` = `SERVICE_NAME`, `correlationId`, `data`) and is validated with
+`@danigil/platform-contracts` 0.2.0 before it leaves; an event that breaks its schema is set
+aside with the reason and never blocks the queue. They are
 published through a **transactional outbox**. The event row is inserted in the same
 Postgres transaction as the ledger change, and a relay on every instance publishes pending rows
 (`FOR UPDATE SKIP LOCKED`, at-least-once, stable `event-id` header for dedupe). There can't be a
@@ -265,9 +268,16 @@ pnpm test:e2e    # Playwright: bet → cash out → payout; late cash-out reject
 pnpm load        # k6: 1,000 simulated players
 ```
 
-CI (GitHub Actions) runs typecheck, all suites against real Postgres and Redis, Playwright,
-Docker builds for the three images, `helm lint` with kubeconform, and validation of both Compose
-files.
+CI (GitHub Actions) runs typecheck, all suites against real Postgres and Redis, the event
+contract test (the events the real engine and ledger persist, checked with the
+`@danigil/platform-contracts` kit), Playwright, Docker builds for the three images (pushed to
+GHCR from `main` with the commit SHA), `helm lint` with kubeconform, and validation of both
+Compose files. New tests were each checked against a deliberate mutation of the code they guard.
+
+Operations endpoints: `GET /health/live`, `GET /health/ready` (503 only while Postgres or Redis
+is down) and `GET /metrics` (Prometheus: `http_requests_total`, `http_request_duration_seconds`,
+round-loop latency, bets and cash-outs, connections, clock offset, outbox lag, Core
+settlements). `GET /health` keeps the summary used by Docker, nginx and the smoke test.
 
 ## Deployment
 
@@ -279,6 +289,36 @@ files.
   [`docs/deploy-nas.md`](docs/deploy-nas.md). It covers building `linux/amd64` images, the
   `docker save`/SHA-256 transfer, deploy, update, rollback, database backup and restore, and
   the iframe embed.
+
+## Platform integration: verified and not verified
+
+`PLATFORM_MODE=true` runs Ronin inside the platform (Core identity and wallet, platform Kafka);
+see [`docs/platform-mode.md`](docs/platform-mode.md). Standalone stays the default.
+
+**Verified** (automated, in CI unless noted):
+
+- Core user tokens through the contract verifier against a real JWKS over HTTP: issuer,
+  audience, expiry, tampering, machine tokens refused, key rotation.
+- Every event the engine and ledger persist validates against the published 0.2.0 schemas;
+  ids survive a failed send and the retry.
+- Stakes as Core holds, atomic capture with payout, release on failure, exactly-once settlement
+  after Core comes back, forced machine-token renewal: against an HTTP stand-in that follows
+  Core's legacy wallet behaviour, on real Postgres.
+- Token expiry on a real API process: commands refused at `exp`, a 1.30x auto cash-out still
+  paid after the token lapsed, renewal on the same socket, other players' tokens refused.
+- Health probes and Prometheus metrics on two real API processes; health events on change.
+- Platform-mode UI (no guest, sign-up or refill): checked by screenshot, not by an automated test.
+
+**Not verified yet:**
+
+- Anything against the real platform-core: legacy hold routes, error codes, client provisioning,
+  self-exclusion mid-session, Core down during a round. The contract package does not cover
+  Ronin's legacy routes, so this needs Core itself.
+- The portal side of the token hand-over (`ronin:token-request` / `ronin:token`): no portal
+  implements it yet.
+- Publishing to a real Kafka broker from this branch (CI and local runs use dry-run and a fake
+  producer).
+- A second instance inside the platform staging stack on the NAS, and its memory use.
 
 ## Asset credits
 
