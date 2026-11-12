@@ -196,7 +196,7 @@ Domain events are versioned: `ronin.round.started.v1`, `ronin.bet.placed.v1`,
 
 Every message uses the platform envelope (`id` UUID, `type`, `version`, `occurredAt`,
 `source` = `SERVICE_NAME`, `correlationId`, `data`) and is validated with
-`@danigil/platform-contracts` 0.2.0 before it leaves; an event that breaks its schema is set
+`@danigil/platform-contracts` 0.3.0 before it leaves; an event that breaks its schema is set
 aside with the reason and never blocks the queue. They are
 published through a **transactional outbox**. The event row is inserted in the same
 Postgres transaction as the ledger change, and a relay on every instance publishes pending rows
@@ -301,29 +301,33 @@ budget) is in [`docs/platform-infra-additions.md`](docs/platform-infra-additions
 
 - Core user tokens through the contract verifier against a real JWKS over HTTP: issuer,
   audience, expiry, tampering, machine tokens refused, key rotation.
-- Every event the engine and ledger persist validates against the published 0.2.0 schemas;
+- Every event the engine and ledger persist validates against the published 0.3.0 schemas;
   ids survive a failed send and the retry.
-- Stakes as Core holds, atomic capture with payout, release on failure, exactly-once settlement
-  after Core comes back, forced machine-token renewal: against an HTTP stand-in that follows
-  Core's legacy wallet behaviour, on real Postgres.
+- Stakes as Core holds on `/api/v1`, settlement intention before a bet is accepted, atomic settle
+  with the gross payout, `void` on failure, exactly-once settlement after Core comes back, a
+  settlement past Core's grace parked as `FAILED`, forced machine-token renewal: against an HTTP
+  stand-in that follows Core's `/api/v1` wallet contract, on real Postgres.
 - Token expiry on a real API process: commands refused at `exp`, a 1.30x auto cash-out still
   paid after the token lapsed, renewal on the same socket, other players' tokens refused.
 - Health probes and Prometheus metrics on two real API processes; health events on change.
 - Platform-mode UI (no guest, sign-up or refill): checked by screenshot, not by an automated test.
 
-- Against a **real platform-core** (`main` at `71e2e50`, built from source; manual run, not CI):
-  a whole round, Core killed mid-round, lost responses on hold and capture, and self-exclusion
-  mid-session, with Core balances exact to the cent. Provisional: through Core's legacy wallet
-  routes, which is what Ronin uses today ([details and what Core needs for `/api/v1`](docs/platform-mode.md#migrating-to-apiv1-what-platform-core-is-missing)).
+- Against a **real platform-core v0.2.0** (commit `3fd3c70`, built from source, with contracts
+  0.3.0; manual run, not CI): player-session activation and its single grant, a whole round, Core
+  killed mid-round, lost responses on hold, intention and settle, idempotent replays and conflicts
+  at Core, self-exclusion mid-session, insufficient funds and a settlement past the grace, with
+  Core balances exact to the cent and mutation checks ([details](docs/platform-mode.md#verified-against-a-real-platform-core)).
 - Publishing to a **real Kafka broker** (CI job with `apache/kafka:3.9.1`): every topic arrives,
   validates against the contract, keyed by round, `event-id` header = body id, and Ronin's own
   consumer group reads it back.
 
 **Not verified yet:**
 
-- Ronin on Core's `/api/v1` endpoints: not possible with Core `71e2e50` (no payout, no atomic
-  settlement, no grants API). See the list in `docs/platform-mode.md`.
-- The same suite against a tagged Core release (Core has no tag yet).
+- The Core **image** `ghcr.io/danimagnum/platform-core@sha256:2d9c9270…` itself (no Docker where
+  the suite ran; the same commit was built from source), and Core in the NAS staging (not
+  operational yet).
+- Core outages longer than about 90 minutes (hold life + the 1800 s grace): Core refunds the
+  stake and a decided win is flagged for manual reconciliation, not paid by Ronin.
 - The portal side of the token hand-over (`ronin:token-request` / `ronin:token`): no portal
   implements it yet.
 - A second instance inside the platform staging stack on the NAS, and its memory use: pending

@@ -61,7 +61,8 @@ on `/health/ready`, depends on Kafka, Postgres, Redis and Core).
       REDIS_NAMESPACE: ronin-platform  # pub/sub ignores the DB index: keep a distinct prefix
       CORE_URL: http://core:3000
       CORE_CLIENT_ID: ronin
-      CORE_HOUSE_ACCOUNT_ID: ${RONIN_HOUSE_ACCOUNT_ID:?house account id from Core}
+      CORE_SERVICE_ID: ronin        # player activation: POST /v1/services/ronin/activate
+      CORE_HOLD_TTL_SECONDS: '3600'  # stake hold life; settle stays possible 1800 s beyond it
       CORE_CURRENCY: EUR
       KAFKA_CLIENT_ID: ronin-rush
       KAFKA_PARTITIONS: '3'
@@ -144,7 +145,7 @@ Produced by Ronin (key = round id, 3 partitions, envelope validated with
 | Topic | Notes |
 |---|---|
 | `ronin.round.started.v1` | |
-| `ronin.bet.placed.v1` | Two facts per bet: the ledger shape and the engine shape (both in the 0.2.0 schema). Consumers counting bets must dedupe by `data.betId` / `data.bet.betId`. |
+| `ronin.bet.placed.v1` | Two facts per bet: the ledger shape and the engine shape (both in the contract schema). Consumers counting bets must dedupe by `data.betId` / `data.bet.betId`. |
 | `ronin.bet.cashed_out.v1` | Same two shapes. |
 | `ronin.round.crashed.v1` | |
 | `ronin.round.settled.v1` | |
@@ -166,41 +167,37 @@ group access for that group.
 
 ## 5. Core service client
 
-Ronin settles through Core's **legacy** wallet routes (`/v1/wallet/...`, atomic capture with
-`payoutAmount`), as `docs/migration-0.2.0.md` of the contracts package requires for Ronin. The
-client therefore needs:
+Ronin talks to Core's **`/api/v1` wallet** (`@danigil/platform-contracts` 0.3.0, Core v0.2.0): hold,
+settlement intention, settle. Core's own provisioning creates the client; nothing has to be inserted
+by hand any more.
 
-| Client id | Scopes |
-|---|---|
-| `ronin` | `wallet:legacy:read wallet:legacy:write` |
+| Client id | Scopes Ronin uses | Provisioned by Core |
+|---|---|---|
+| `ronin` | `wallet:read wallet:write` | also `wallet:legacy:read wallet:legacy:write rg:check`; explicit EUR system grants on `house` and `rake` |
 
-`rg:check` is optional (advisory; Core enforces responsible-gaming limits inside the hold
-transaction anyway). Generic `wallet:read`/`wallet:write` do not grant the legacy routes.
+Steps in a platform-core checkout (Core's documented scripts):
 
-**Core's seed script cannot create it today:** `pnpm db:seed` only creates `local-service`
-(`wallet:read wallet:write accounts:write rg:check`). Two options:
-
-- **Preferred:** extend Core's seed with an optional client, e.g. `LOCAL_SERVICE_CLIENTS=ronin:wallet:legacy:read,wallet:legacy:write`.
-- **Interim:** insert the row with Core's own hash function, from a platform-core checkout:
-
-  ```sh
-  export RONIN_SECRET=$(openssl rand -hex 24)
-  HASH=$(pnpm exec tsx -e "import('./packages/database/src/password').then(async m => console.log(await m.hashSecret(process.env.RONIN_SECRET)))")
-  # psql only substitutes :'hash' in statements read from stdin or a file, not in -c.
-  echo "INSERT INTO service_clients(id, secret_hash, scopes) VALUES ('ronin', :'hash', ARRAY['wallet:legacy:read','wallet:legacy:write']) ON CONFLICT (id) DO NOTHING;" \
-    | psql "$CORE_DATABASE_URL" -v hash="$HASH"
-  echo "CORE_CLIENT_SECRET=$RONIN_SECRET" >> .env.ronin   # never commit it
-  ```
-
-  This exact sequence was used against platform-core `71e2e50` built from source. Core accepts
-  `Idempotency-Key` values matching `^[\w:.-]{8,128}$`; Ronin's keys (`ronin:hold:…`,
-  `ronin:capture:…`, `ronin:release:…`) comply.
-
-House account for `CORE_HOUSE_ACCOUNT_ID` (created by the seed):
-
-```sql
-SELECT id FROM accounts WHERE kind = 'house' AND currency = 'EUR';
+```sh
+pnpm db:migrate && pnpm db:seed
+# SERVICE_CLIENT_SECRETS_FILE: private JSON outside Git, a distinct 32+ character secret per client
+export SERVICE_CLIENT_SECRETS_FILE=/path/to/service-secrets.json   # {"ronin": "<secret>", ...}
+pnpm db:seed:services
+# Ronin's .env.ronin: CORE_CLIENT_SECRET=<the "ronin" value of that file>   (never commit it)
 ```
+
+`db:seed:services` preserves existing secrets and creates no player grants. **Player grants** are
+created by Core when each player's own session token activates Ronin
+(`POST /v1/services/ronin/activate`), which Ronin does at the player's first authenticated request;
+the operator does nothing per player. Ronin no longer needs `CORE_HOUSE_ACCOUNT_ID` (the settle
+credits Core's provisioned house; the setting is accepted and ignored). `rg:check` is not used.
+Core accepts `Idempotency-Key` values matching `^[\w:.-]{8,128}$`; Ronin's keys
+(`ronin:hold:…`, `ronin:intent:<bet>`, `ronin:settle:<bet>`, `ronin:void:<bet>`,
+`ronin:release:<bet>`, `ronin:activate:<subject>`) comply.
+
+What this relies on in Core (all verified against v0.2.0 built from source, see
+`docs/platform-mode.md`): the house account can fund payouts (it allows a negative balance); the
+settlement grace is fixed at 1800 s; the activation endpoint works with a player token whose
+`aud` is Ronin's `CORE_AUDIENCE`.
 
 ## 6. Prometheus
 
@@ -307,8 +304,9 @@ CORE_JWKS_URL=http://core:3000/.well-known/jwks.json
 CORE_ISSUER=http://localhost:3001   # must equal Core's JWT_ISSUER (a URL)
 CORE_AUDIENCE=core-api              # must equal the aud Core puts in user tokens (see 11)
 CORE_CLIENT_ID=ronin
-CORE_CLIENT_SECRET=<generated in section 5>
-CORE_HOUSE_ACCOUNT_ID=<uuid from section 5>
+CORE_CLIENT_SECRET=<the ronin secret from section 5>
+CORE_SERVICE_ID=ronin
+CORE_HOLD_TTL_SECONDS=3600
 CORE_CURRENCY=EUR
 JWT_SECRET=<32+ random characters>  # required in production even in platform mode (bots' sessions)
 KAFKA_BROKERS=kafka:29092
@@ -350,7 +348,8 @@ the instance and report before tuning.
 
 - **Core audience.** platform-infra defaults `CORE_AUDIENCE` to `core-api`; Ronin verifies user
   tokens against exactly that value. Confirm it is the `aud` Core issues for player tokens.
-- **Seed of the `ronin` client** (section 5): extend Core's seed, or use the interim SQL.
+- **Secrets file.** `db:seed:services` needs `SERVICE_CLIENT_SECRETS_FILE`; platform-infra has to
+  provide that file (outside Git) and hand Ronin its `ronin` secret.
 - **Portal hand-over.** In platform mode Ronin asks the embedding portal for renewed tokens over
   `postMessage` (`docs/platform-mode.md`). The portal side is not implemented yet; without it a
   player's session ends when the 10-minute token expires.
