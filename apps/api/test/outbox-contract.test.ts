@@ -18,7 +18,7 @@ const row = (topic: string, payload: unknown, key = '7') => ({
   created_at: new Date('2026-11-11T10:00:00Z'),
 });
 
-describe('outbox rows against @danigil/platform-contracts 0.2.0', () => {
+describe('outbox rows against @danigil/platform-contracts 0.3.0', () => {
   it('accepts both published shapes of a bet fact (ledger and engine)', () => {
     const ledger = validateOutboxRow(
       row('ronin.bet.placed.v1', { betId: 'b1', roundId: 7, userId: 'u1', amount: 500, autoX100: null, placedAt: 1_762_855_200_000 }),

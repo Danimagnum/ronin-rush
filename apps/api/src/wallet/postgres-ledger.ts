@@ -264,7 +264,7 @@ export class PostgresLedger implements BetLedger {
     await q.query(
       `INSERT INTO platform_settlements (bet_id, hold_id, external_user, payout, idempotency_key)
        VALUES ($1, $2, $3, $4, $5) ON CONFLICT (bet_id) DO NOTHING`,
-      [betId, hold.holdId, hold.externalUser, payout, `ronin:capture:${betId}`],
+      [betId, hold.holdId, hold.externalUser, payout, `ronin:settle:${betId}`],
     );
   }
 

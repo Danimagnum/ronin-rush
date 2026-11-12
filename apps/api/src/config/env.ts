@@ -53,8 +53,12 @@ export const EnvSchema = z.object({
   CORE_AUDIENCE: z.string().min(1).optional(),
   CORE_CLIENT_ID: z.string().optional(),
   CORE_CLIENT_SECRET: z.string().optional(),
-  /** Core house account (kind=house) that captured stakes settle into. */
-  CORE_HOUSE_ACCOUNT_ID: z.string().uuid().optional(),
+  /** Ronin's service id in Core's provisioning, used for player activation. Defaults to CORE_CLIENT_ID. */
+  CORE_SERVICE_ID: z.string().min(1).optional(),
+  /** Lifetime of a stake hold in Core. Settlement stays possible 1800 s beyond it. */
+  CORE_HOLD_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(3_600),
+  /** No longer used: /api/v1 settle credits Core's provisioned house itself. Accepted and ignored. */
+  CORE_HOUSE_ACCOUNT_ID: z.string().optional(),
   CORE_CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
   /**
    * Origins of the platform portal(s) that may hand the embedded game a renewed Core token via
@@ -86,7 +90,7 @@ export const EnvSchema = z.object({
     ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'must be set in production' });
   }
   if (env.PLATFORM_MODE) {
-    for (const k of ['CORE_URL', 'CORE_JWKS_URL', 'CORE_ISSUER', 'CORE_AUDIENCE', 'CORE_CLIENT_ID', 'CORE_CLIENT_SECRET', 'CORE_HOUSE_ACCOUNT_ID'] as const) {
+    for (const k of ['CORE_URL', 'CORE_JWKS_URL', 'CORE_ISSUER', 'CORE_AUDIENCE', 'CORE_CLIENT_ID', 'CORE_CLIENT_SECRET'] as const) {
       if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: 'required when PLATFORM_MODE=true' });
     }
   }

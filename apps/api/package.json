@@ -15,7 +15,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@danigil/platform-contracts": "0.2.0",
+    "@danigil/platform-contracts": "0.3.0",
     "@nestjs/common": "^11.0.10",
     "@nestjs/core": "^11.0.10",
     "@nestjs/platform-express": "^11.0.10",

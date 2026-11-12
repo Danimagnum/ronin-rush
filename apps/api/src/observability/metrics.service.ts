@@ -109,7 +109,8 @@ export class MetricsService implements OnApplicationBootstrap {
       families.push(
         g('ronin_platform_pending_settlements', 'Core captures not yet confirmed.', core?.pendingSettlements ?? -1),
         g('ronin_platform_oldest_settlement_seconds', 'Age of the oldest unconfirmed Core capture.', core?.oldestPendingSeconds ?? -1),
-        c('ronin_platform_settlements_total', 'Core captures confirmed by this instance.', platform.settled),
+        c('ronin_platform_settlements_total', 'Core settlements confirmed by this instance.', platform.settled),
+        c('ronin_platform_settlements_failed_total', 'Settlements Core refused for good (parked as FAILED for reconciliation).', platform.failed),
         c('ronin_core_requests_total', 'Calls to platform-core from this instance.', platform.core.calls),
         c('ronin_core_failures_total', 'Calls to platform-core that failed after retries.', platform.core.failures),
         g('ronin_core_latency_p95_seconds', 'p95 latency of recent platform-core calls.', platform.core.p95() / 1000),

@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import type { DataSource } from 'typeorm';
 import { z } from 'zod';
 import type { Env } from '../config/env';
-import { DATA_SOURCE, ENV } from '../config/tokens';
+import { DATA_SOURCE, ENV, PLATFORM_LEDGER } from '../config/tokens';
+import type { PlatformLedger } from '../platform/platform-ledger';
 import { PostgresLedger } from '../wallet/postgres-ledger';
 import { createAuthVerifier } from '@danigil/platform-contracts';
 import { JwtError, signHs256, verifyHs256 } from './jwt';
@@ -38,6 +39,7 @@ export class AuthService {
     @Inject(ENV) private readonly env: Env,
     @Inject(DATA_SOURCE) private readonly ds: DataSource,
     private readonly ledger: PostgresLedger,
+    @Optional() @Inject(PLATFORM_LEDGER) private readonly platform: PlatformLedger | null = null,
   ) {
     this.verifier = env.PLATFORM_MODE
       ? createAuthVerifier({ issuer: env.CORE_ISSUER!, audience: env.CORE_AUDIENCE!, jwksUrl: env.CORE_JWKS_URL! })
@@ -117,12 +119,18 @@ export class AuthService {
       return Promise.reject(new JwtError('platform token rejected'));
     }
     const expiresAt = claims.exp * 1000;
-    const [row] = await this.ds.query(`SELECT id, username FROM users WHERE external_id = $1`, [claims.sub]);
-    if (row) return { userId: row.id, username: row.username, expiresAt };
+    const [row] = await this.ds.query(`SELECT id, username, external_wallet_id FROM users WHERE external_id = $1`, [claims.sub]);
+    if (row) {
+      // Players that have not been activated yet (first entry, or Core was down then) retry here.
+      if (!row.external_wallet_id) await this.platform?.ensureWallet(row.id, claims.sub, token);
+      return { userId: row.id, username: row.username, expiresAt };
+    }
     const base = (claims.email.split('@')[0] || `p_${claims.sub.slice(0, 8)}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 14);
     const username = `${base}_${claims.sub.slice(0, 4)}`;
     // Money lives in platform-core in this mode; the local account only mirrors bets (grant 0).
     const u = await this.ledger.createUser({ username, externalId: claims.sub, grantCents: 0 });
+    // First entry: the PLAYER's own token activates Ronin in Core (grant for this player only).
+    await this.platform?.ensureWallet(u.userId, claims.sub, token);
     return { userId: u.userId, username, expiresAt };
   }
 
