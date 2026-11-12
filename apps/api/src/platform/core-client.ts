@@ -1,20 +1,21 @@
 import { createClientCredentialsProvider } from '@danigil/platform-contracts';
+import { WalletApiError, WalletClient } from '@danigil/platform-contracts/wallet';
 
 /**
- * Client for platform-core's LEGACY wallet routes (/v1/wallet). @danigil/platform-contracts 0.2.0
- * (docs/migration-0.2.0.md) tells Ronin to keep the legacy atomic capture+payout until Core ships
- * an equivalent settlement API: a plain capture followed by a payout is not equivalent. Those
- * routes are outside the package's WalletClient, so this small client stays, but the machine
- * token comes from the package's client-credentials provider.
+ * Client for platform-core's /api/v1 wallet (OpenAPI 1.2.0, @danigil/platform-contracts 0.3.0).
  *
- *  - Service token: createClientCredentialsProvider (scopes wallet:legacy:read/write), cached and
- *    renewed before expiry, concurrent grants shared; forced renewal once on a 401.
- *  - Every write sends an Idempotency-Key. Ambiguous failures (network, timeout, 5xx, 429,
- *    409 idempotency_in_progress) are retried with the SAME key and body, so Core applies
- *    the write at most once and replays the original response.
- *  - Amounts are decimal strings in minor units; Ronin's cents map 1:1.
+ *  - Player wallet: Core resolves it when the PLAYER activates the service with their own session
+ *    token (POST /v1/services/{id}/activate): Core creates the explicit per-wallet grant and
+ *    returns the walletId. No SQL, no machine-token self-service.
+ *  - Money: createHold (stake) -> registerHoldSettlementIntent (before the bet is accepted) ->
+ *    settleHold (capture + gross payout in one Core transaction, commission 0) or releaseHold.
+ *  - Service token: createClientCredentialsProvider (wallet:read, wallet:write), cached, renewed
+ *    before expiry, concurrent grants shared; forced renewal once on a 401 (inside WalletClient).
+ *  - Every write sends a stable Idempotency-Key. Ambiguous failures (network, timeout, 5xx, 429,
+ *    409 idempotency_in_progress) are retried with the SAME key and body, so Core applies the
+ *    write at most once and replays the original response.
+ *  - Amounts are integer strings in minor units (EUR cents), Ronin's cents map 1:1.
  */
-
 export class CoreError extends Error {
   constructor(
     readonly status: number,
@@ -31,17 +32,28 @@ export class CoreError extends Error {
   }
 }
 
-export interface CoreAccount {
-  id: string;
-  kind: string;
-  currency: string;
-  balance: string;
+export interface CoreHold {
+  holdId: string;
+  walletId: string;
+  status: string;
+  expiresAt: string;
 }
 
-export interface CoreHold {
-  id: string;
-  status: string;
-  transactionId?: string;
+export interface CoreIntent {
+  settlementId: string;
+  status: 'pending';
+  settleBefore: string;
+}
+
+export interface CoreReceipt {
+  settlementId: string;
+  status: 'settled';
+  result: string;
+  capturedAmount: string;
+  payoutAmount: string;
+  commissionAmount: string;
+  netPayoutAmount: string;
+  transactionIds: string[];
 }
 
 export interface CoreClientOptions {
@@ -50,7 +62,9 @@ export interface CoreClientOptions {
   tokenUrl?: string;
   clientId: string;
   clientSecret: string;
-  /** Wallet currency used by Ronin stakes (Core keeps one account per currency). */
+  /** Service id used to activate players ("ronin" in Core's provisioning). Defaults to clientId. */
+  serviceId?: string;
+  /** Wallet currency used by Ronin stakes (Core 0.2.0 supports EUR only). */
   currency: string;
   timeoutMs?: number;
   retries?: number;
@@ -58,11 +72,11 @@ export interface CoreClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Provisioning matrix of the 0.2.0 contract (docs/auth.md) for Ronin's legacy atomic settlement. */
-export const CORE_SCOPES = ['wallet:legacy:read', 'wallet:legacy:write'] as const;
+/** Scopes of the `ronin` client in Core's provisioning for /api/v1 (no legacy scopes needed). */
+export const CORE_SCOPES = ['wallet:read', 'wallet:write'] as const;
 
 export class CoreClient {
-  private readonly token: (forceRefresh?: boolean) => Promise<string>;
+  private readonly wallet: WalletClient;
   private readonly fetch: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   /** Latency of recent calls, for the System view. */
@@ -73,12 +87,20 @@ export class CoreClient {
   constructor(private readonly opts: CoreClientOptions) {
     this.fetch = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.token = createClientCredentialsProvider({
+    const token = createClientCredentialsProvider({
       tokenUrl: opts.tokenUrl ?? this.url('/oauth/token'),
       clientId: opts.clientId,
       clientSecret: opts.clientSecret,
       scopes: CORE_SCOPES,
       fetch: this.fetch,
+    });
+    this.wallet = new WalletClient({
+      baseUrl: this.url('/api/v1'),
+      token,
+      fetch: this.fetch,
+      retries: opts.retries ?? 3,
+      timeoutMs: opts.timeoutMs ?? 3_000,
+      sleep: this.sleep,
     });
   }
 
@@ -86,86 +108,107 @@ export class CoreClient {
     return this.opts.currency;
   }
 
+  get serviceId(): string {
+    return this.opts.serviceId ?? this.opts.clientId;
+  }
+
   // ── wallet ─────────────────────────────────────────────────────────────
 
-  /** The player's stake account: cash first, bonus as a fallback, in Ronin's currency. */
-  async stakeAccount(userId: string): Promise<CoreAccount | null> {
-    const accounts = await this.call<CoreAccount[]>('GET', `/v1/wallet/accounts?userId=${encodeURIComponent(userId)}`);
-    const mine = accounts.filter((a) => a.currency === this.opts.currency);
-    return mine.find((a) => a.kind === 'user_cash') ?? mine.find((a) => a.kind === 'user_bonus') ?? null;
+  /**
+   * First entry of a player: Core verifies the PLAYER's live session token, creates the explicit
+   * grant for this player and this service only, and returns the EUR cash wallet id. Repeating it
+   * with the same key is safe. A machine token cannot do this on behalf of a player.
+   */
+  async activatePlayer(playerToken: string, subject: string): Promise<string> {
+    const started = Date.now();
+    this.calls++;
+    const key = `ronin:activate:${subject}`;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        let err: CoreError;
+        try {
+          const res = await this.fetch(this.url(`/v1/services/${encodeURIComponent(this.serviceId)}/activate`), {
+            method: 'POST',
+            headers: { authorization: `Bearer ${playerToken}`, 'content-type': 'application/json', 'idempotency-key': key, accept: 'application/json' },
+            body: '{}',
+            signal: AbortSignal.timeout(this.opts.timeoutMs ?? 3_000),
+          });
+          if (res.ok) {
+            const out = (await res.json()) as { wallets?: { walletId: string; currency: string; canWrite: boolean }[] };
+            const w = out.wallets?.find((x) => x.currency === this.opts.currency && x.canWrite);
+            if (!w) throw new CoreError(422, 'wallet_not_granted', `no writable ${this.opts.currency} wallet in the activation response`);
+            return w.walletId;
+          }
+          const payload = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
+          err = new CoreError(res.status, payload.code ?? 'error', payload.message ?? res.statusText);
+        } catch (e) {
+          err = e instanceof CoreError ? e : new CoreError(0, 'network_error', (e as Error).message);
+        }
+        if (!err.retriable || attempt >= (this.opts.retries ?? 3)) throw err;
+        await this.sleep(100 * 2 ** (attempt + 1));
+      }
+    } catch (e) {
+      this.failures++;
+      throw e;
+    } finally {
+      this.record(Date.now() - started);
+    }
+  }
+
+  /** Spendable balance (ledger minus holds) in minor units. */
+  async available(walletId: string): Promise<number> {
+    const b = await this.api(() => this.wallet.call('getWalletBalance', { walletId }, undefined));
+    return Number(b.available);
   }
 
   /** Reserves the stake. Core checks KYC, exclusion and loss limits inside the same transaction. */
-  createStakeHold(accountId: string, amount: number, reference: string, idempotencyKey: string): Promise<CoreHold> {
-    return this.call('POST', '/v1/wallet/holds', { accountId, amount: String(amount), purpose: 'stake', reference }, idempotencyKey);
-  }
-
-  /** Settles the stake into the house and pays `payout` (0 for a lost bet) back to the player, atomically. */
-  captureHold(holdId: string, houseAccountId: string, payout: number, idempotencyKey: string): Promise<CoreHold> {
-    return this.call(
-      'POST',
-      `/v1/wallet/holds/${encodeURIComponent(holdId)}/capture`,
-      { toAccountId: houseAccountId, payoutAmount: String(payout) },
-      idempotencyKey,
+  createStakeHold(walletId: string, amount: number, reference: string, expiresAt: string, idempotencyKey: string): Promise<CoreHold> {
+    return this.api(() =>
+      this.wallet.call(
+        'createHold',
+        { walletId },
+        { money: { amount: String(amount), currency: this.opts.currency }, reference, expiresAt, purpose: 'stake' },
+        { idempotencyKey, correlationId: reference },
+      ),
     );
   }
 
-  /** Returns a hold to the player (compensation when Ronin could not record the bet). */
+  /** Reserves Core's settlement window for this stake. Must succeed BEFORE the bet is accepted. */
+  registerIntent(holdId: string, settlementId: string, idempotencyKey: string): Promise<CoreIntent> {
+    return this.api(() => this.wallet.call('registerHoldSettlementIntent', { holdId }, { settlementId }, { idempotencyKey, correlationId: settlementId }));
+  }
+
+  /** Captures the stake into the house and pays `payout` (gross, 0 for a lost bet) to the player, atomically. */
+  settle(holdId: string, result: string, payout: number, idempotencyKey: string, correlationId?: string): Promise<CoreReceipt> {
+    return this.api(() =>
+      this.wallet.call(
+        'settleHold',
+        { holdId },
+        { result, payoutAmount: String(payout), commissionAmount: '0', asset: this.opts.currency as 'EUR' },
+        { idempotencyKey, ...(correlationId ? { correlationId } : {}) },
+      ),
+    );
+  }
+
+  /** Returns a hold that has NO settlement intention (Core refuses a release once one exists). */
   releaseHold(holdId: string, idempotencyKey: string): Promise<CoreHold> {
-    return this.call('POST', `/v1/wallet/holds/${encodeURIComponent(holdId)}/release`, undefined, idempotencyKey);
+    return this.api(() => this.wallet.call('releaseHold', { holdId }, undefined, { idempotencyKey }));
   }
 
   // ── plumbing ───────────────────────────────────────────────────────────
 
-  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
-    const retries = this.opts.retries ?? 3;
-    let attempt = 0;
-    let renewed = false;
-    let force = false;
-    for (;;) {
-      const started = Date.now();
-      this.calls++;
-      try {
-        const res = await this.once<T>(method, path, body, idempotencyKey, force);
-        this.record(Date.now() - started);
-        return res;
-      } catch (e) {
-        this.record(Date.now() - started);
-        const err = e instanceof CoreError ? e : new CoreError(0, 'network_error', (e as Error).message);
-        // An expired or revoked machine token: renew it once, same idempotency key and body.
-        if (err.status === 401 && !renewed) {
-          renewed = force = true;
-          continue;
-        }
-        force = false;
-        // A GET is always safe to retry; a write only with its idempotency key.
-        const safe = method === 'GET' || Boolean(idempotencyKey);
-        if (!err.retriable || !safe || attempt >= retries) {
-          this.failures++;
-          throw err;
-        }
-        attempt++;
-        await this.sleep((err as CoreError & { retryAfterMs?: number }).retryAfterMs ?? 100 * 2 ** attempt);
-      }
+  private async api<T>(fn: () => Promise<T>): Promise<T> {
+    const started = Date.now();
+    this.calls++;
+    try {
+      return await fn();
+    } catch (e) {
+      this.failures++;
+      if (e instanceof WalletApiError) throw new CoreError(e.status, e.code, e.message);
+      throw new CoreError(0, 'network_error', (e as Error).message);
+    } finally {
+      this.record(Date.now() - started);
     }
-  }
-
-  private async once<T>(method: string, path: string, body: unknown, idempotencyKey: string | undefined, force: boolean): Promise<T> {
-    const headers: Record<string, string> = { authorization: `Bearer ${await this.token(force)}`, accept: 'application/json' };
-    if (body !== undefined) headers['content-type'] = 'application/json';
-    if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
-    const res = await this.fetch(this.url(path), {
-      method,
-      headers,
-      body: body === undefined ? (method === 'POST' ? '{}' : undefined) : JSON.stringify(body),
-      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 3_000),
-    });
-    if (res.ok) return (await res.json()) as T;
-    const payload = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
-    const err = new CoreError(res.status, payload.code ?? 'error', payload.message ?? res.statusText) as CoreError & { retryAfterMs?: number };
-    const retryAfter = Number(res.headers.get('retry-after'));
-    if (retryAfter > 0) err.retryAfterMs = Math.min(retryAfter, 5) * 1_000;
-    throw err;
   }
 
   private url(path: string): string {

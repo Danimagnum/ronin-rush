@@ -43,10 +43,11 @@ class LedgerController {
           tokenUrl: env.CORE_TOKEN_URL,
           clientId: env.CORE_CLIENT_ID!,
           clientSecret: env.CORE_CLIENT_SECRET!,
+          serviceId: env.CORE_SERVICE_ID,
           currency: env.CORE_CURRENCY,
         });
         return new PlatformLedger(ds, local, core, {
-          houseAccountId: env.CORE_HOUSE_ACCOUNT_ID!,
+          holdTtlSeconds: env.CORE_HOLD_TTL_SECONDS,
           onError: (e) => {
             log.warn((e as Error).message);
             Sentry.captureException(e, { tags: { component: 'platform-ledger' } });

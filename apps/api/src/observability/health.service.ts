@@ -136,15 +136,22 @@ export class HealthService implements OnApplicationBootstrap, OnApplicationShutd
     if (!platform) return null;
     try {
       const [row] = await this.ds.query(
-        `SELECT COUNT(*)::int AS n, COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::float AS oldest
-         FROM platform_settlements WHERE status = 'PENDING'`,
+        `SELECT COUNT(*) FILTER (WHERE status = 'PENDING')::int AS n,
+                COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) FILTER (WHERE status = 'PENDING')), 0)::float AS oldest,
+                COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed
+         FROM platform_settlements WHERE status IN ('PENDING', 'FAILED')`,
       );
       const oldest = Math.round(Number(row.oldest));
       return {
-        ok: oldest <= SETTLEMENT_STALE_SECONDS,
+        ok: oldest <= SETTLEMENT_STALE_SECONDS && row.failed === 0,
         pendingSettlements: row.n,
         oldestPendingSeconds: oldest,
-        detail: oldest > SETTLEMENT_STALE_SECONDS ? `settlement pending for ${oldest} s: Core not accepting captures` : undefined,
+        detail:
+          row.failed > 0
+            ? `${row.failed} settlement(s) refused by Core for good: reconcile platform_settlements WHERE status = 'FAILED'`
+            : oldest > SETTLEMENT_STALE_SECONDS
+              ? `settlement pending for ${oldest} s: Core not accepting settlements`
+              : undefined,
       };
     } catch (e) {
       return { ok: false, pendingSettlements: -1, oldestPendingSeconds: -1, detail: (e as Error).message };

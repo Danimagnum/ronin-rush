@@ -10,20 +10,21 @@ import { io, type Socket } from 'socket.io-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
- * Failure scenarios against a REAL platform-core (not a stand-in): a Core API process built
- * from source, a fault-injecting HTTP proxy between Ronin and Core, and a Ronin API process in
- * PLATFORM_MODE. Ronin settles through Core's legacy wallet routes (/v1/wallet, atomic capture
- * with payout), as @danigil/platform-contracts 0.2.0 prescribes for Ronin; this is provisional
- * until Core offers the equivalent on /api/v1 (see docs/platform-mode.md).
+ * Failure and idempotency scenarios against a REAL platform-core (not a stand-in): a Core API
+ * process built from source (tag v0.2.0, @danigil/platform-contracts 0.3.0), a fault-injecting HTTP
+ * proxy between Ronin and Core, and a Ronin API process in PLATFORM_MODE. Ronin uses only the
+ * /api/v1 wallet: player-session activation, createHold, settlement intention, settle.
  *
- * Opt-in (not in CI: Core's image is private). Needs a migrated and seeded Core database with a
- * service client `ronin` (scopes wallet:legacy:read wallet:legacy:write), and:
+ * Opt-in (not in CI: Core's image is private). Needs a Core database migrated and provisioned with
+ * Core's own scripts (`db:migrate`, `db:seed`, `db:seed:services`, so the `ronin` client has its
+ * documented scopes and system grants), and:
  *   CORE_E2E_DIR          platform-core checkout, built (dist/apps/api/src/main.js)
  *   CORE_E2E_ENV          file of `export KEY=VALUE` lines for Core (PORT, DATABASE_URL, JWT_*, ...)
- *   CORE_E2E_SECRET       the `ronin` client secret
+ *   CORE_E2E_SECRET       the `ronin` client secret from SERVICE_CLIENT_SECRETS_FILE
  *   TEST_DATABASE_URL, REDIS_URL, and a built Ronin API (pnpm build)
  * Test players get kyc_status = 'verified' directly in Core's database (Core's KYC needs document
- * uploads to object storage); no wallet grant is ever inserted.
+ * uploads to object storage). Wallet grants are never inserted: Core creates them when the player's
+ * own session token activates Ronin.
  */
 const DIST = join(__dirname, '..', 'dist', 'main.js');
 const CORE_DIR = process.env.CORE_E2E_DIR;
@@ -96,7 +97,7 @@ interface Player {
   stamp: string;
 }
 
-describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisional, legacy wallet routes)', () => {
+describe.skipIf(!enabled)('Ronin against a real platform-core v0.2.0 (/api/v1): failures and idempotency', () => {
   const coreEnv = enabled ? readEnvFile(CORE_ENV_FILE!) : {};
   const coreUrl = `http://127.0.0.1:${coreEnv.PORT ?? '3601'}`;
   let core: ChildProcess | null = null;
@@ -107,7 +108,6 @@ describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisi
   let coreDb: Client;
   let roninDb: Client;
   let roninDbUrl: string;
-  let houseId: string;
   const sockets: Socket[] = [];
   const events: RoundEvent[] = [];
 
@@ -204,7 +204,6 @@ describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisi
   beforeAll(async () => {
     coreDb = new Client({ connectionString: coreEnv.DATABASE_URL });
     await coreDb.connect();
-    houseId = (await coreDb.query(`SELECT id FROM accounts WHERE kind = 'house' AND currency = 'EUR'`)).rows[0].id;
     await startCore();
     proxy = new FaultProxy(coreUrl);
     const proxyUrl = await proxy.start();
@@ -237,7 +236,7 @@ describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisi
         CORE_AUDIENCE: coreEnv.JWT_AUDIENCE ?? 'platform-core',
         CORE_CLIENT_ID: 'ronin',
         CORE_CLIENT_SECRET: CORE_SECRET,
-        CORE_HOUSE_ACCOUNT_ID: houseId,
+        CORE_SERVICE_ID: 'ronin',
         CORE_CURRENCY: 'EUR',
         BETTING_MS: '1500',
         RESULT_MS: '600',
@@ -270,24 +269,51 @@ describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisi
     await coreDb?.end().catch(() => undefined);
   });
 
-  it('a whole round in platform mode: stake held in Core, settled in Core by one atomic capture', async () => {
+  const machineToken = async () => {
+    const res = await fetch(`${coreUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Basic ${Buffer.from(`ronin:${CORE_SECRET}`).toString('base64')}` },
+      body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'wallet:read wallet:write' }),
+    });
+    return ((await res.json()) as { access_token: string }).access_token;
+  };
+  const holdRow = async (accountId: string) =>
+    (await coreDb.query(`SELECT h.id, h.status, h.reference, h.intent_id FROM holds h WHERE h.account_id = $1 ORDER BY h.created_at`, [accountId])).rows as Array<{ id: string; status: string; reference: string; intent_id: string | null }>;
+
+  it('first entry: the player\'s own session creates one grant for Ronin on their wallet, and no other', async () => {
     const p = await newPlayer('aiko');
+    await connect(p);
+    const grants = (await coreDb.query(`SELECT client_id, account_id, can_write FROM service_wallet_grants WHERE account_id = $1`, [p.accountId])).rows;
+    expect(grants).toEqual([{ client_id: 'ronin', account_id: p.accountId, can_write: true }]);
+    const [u] = (await roninDb.query(`SELECT external_wallet_id FROM users WHERE external_id = $1`, [p.userId])).rows;
+    expect(u.external_wallet_id).toBe(p.accountId);
+    // Ronin holds no grant on anybody who never entered it.
+    const stranger = await newPlayer('ghost');
+    const token = await machineToken();
+    const probe = await coreJson(`/api/v1/wallets/${stranger.accountId}/balance`, { token });
+    expect(probe.status).toBeGreaterThanOrEqual(403);
+    expect(probe.status).toBeLessThan(500);
+  }, 60_000);
+
+  it('a whole round: stake held in Core, window confirmed before the bet, settled by one atomic settle', async () => {
+    const p = await newPlayer('mika');
     const s = await connect(p);
     const roundId = await nextBetting();
-    const bet = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: 110, idempotencyKey: 'core-aiko-bet-0001' });
+    const bet = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: 110, idempotencyKey: 'core-mika-bet-0001' });
     expect(bet.ok, JSON.stringify(bet)).toBe(true);
-    expect(await coreBalance(p.accountId)).toBe(9_000); // reserved in Core, not in Ronin
+    expect(await coreBalance(p.accountId)).toBe(9_000); // the stake sits in Core's escrow
+    const [h0] = await holdRow(p.accountId);
+    expect(h0).toMatchObject({ status: 'active', reference: `ronin:${roundId}:${bet.bet.betId}` });
+    expect(h0!.intent_id).toBeTruthy(); // settlement window confirmed before the bet was accepted
     const crash = (await settledRound(roundId)).crashX100;
     const done = await until(async () => (await settlement(bet.bet.betId))?.status === 'DONE' && settlement(bet.bet.betId), 20_000, 'settlement');
     const payout = crash >= 110 ? 1_100 : 0;
     expect(Number(done.payout)).toBe(payout);
     expect(await coreBalance(p.accountId)).toBe(9_000 + payout);
-    const holds = await coreHolds(p.accountId);
-    expect(holds).toHaveLength(1);
-    expect(holds[0]).toMatchObject({ status: 'captured', reference: `ronin:${roundId}:${bet.bet.betId}` });
+    expect((await holdRow(p.accountId)).map((h) => h.status)).toEqual(['captured']);
   }, 90_000);
 
-  it('Core down mid-round: the game decision stands, settlement is retried and lands exactly once', async () => {
+  it('Core down mid-round: the game decision stands, settlement is retried and lands exactly once; new bets are refused meanwhile', async () => {
     const p = await newPlayer('mei');
     const s = await connect(p);
     const roundId = await nextBetting();
@@ -304,54 +330,135 @@ describe.skipIf(!enabled)('Ronin against a real platform-core: failures (provisi
       return st && st.status === 'PENDING' && st.attempts >= 1 && st;
     }, 20_000, 'a failed settlement attempt');
     expect(pending.status).toBe('PENDING');
-    const ready = await fetch(`http://127.0.0.1:${RONIN_PORT}/health/ready`);
-    expect(ready.status).toBe(200); // Core is a soft dependency: the game keeps serving
+    expect((await fetch(`http://127.0.0.1:${RONIN_PORT}/health/ready`)).status).toBe(200); // Core is a soft dependency
+
+    await nextBetting();
+    const refused = await emitAck<{ ok: boolean; error?: string }>(s, SOCKET_EVENTS.placeBet, { amount: 500, autoX100: null, idempotencyKey: 'core-mei-bet-00002' });
+    expect(refused).toEqual({ ok: false, error: 'WALLET_UNAVAILABLE' }); // no wallet, no bet
 
     await startCore();
     await until(async () => (await settlement(bet.bet.betId))?.status === 'DONE', 60_000, 'settlement after Core is back');
     const payout = crash >= 110 ? 2_200 : 0;
-    expect(await coreBalance(p.accountId)).toBe(8_000 + payout);
-    const holds = await coreHolds(p.accountId);
-    expect(holds.map((h) => h.status)).toEqual(['captured']); // one hold, captured once
-  }, 120_000);
+    expect(await coreBalance(p.accountId)).toBe(8_000 + payout); // the refused attempt, if it left a trace, is net zero
+    // The bet's own hold was settled exactly once. A bet refused while Core was down may have left a
+    // hold of its own: the unwinding replays it, registers its intention and settles it `void`.
+    const holds = await holdRow(p.accountId);
+    expect(holds.filter((h) => h.reference === `ronin:${roundId}:${bet.bet.betId}`).map((h) => h.status)).toEqual(['captured']);
+    expect(holds.filter((h) => h.status !== 'captured')).toEqual([]);
+    expect((await coreDb.query(`SELECT COUNT(*)::int AS n FROM ledger_transactions lt JOIN holds h ON h.transaction_id = lt.id WHERE h.account_id = $1`, [p.accountId])).rows[0].n).toBe(holds.length);
+  }, 150_000);
 
-  it('lost responses: hold and capture are retried with the same key and applied once', async () => {
+  it('lost responses: hold, intention and settle are each retried with the same key and applied once (including a settle whose answer is lost on every attempt)', async () => {
     const p = await newPlayer('ren');
     const s = await connect(p);
     const roundId = await nextBetting();
-    proxy.dropNextResponse('POST', /^\/v1\/wallet\/holds$/);
-    proxy.dropNextResponse('POST', /^\/v1\/wallet\/holds\/[^/]+\/capture$/);
+    proxy.dropNextResponse('POST', /^\/api\/v1\/wallets\/[^/]+\/holds$/);
+    proxy.dropNextResponse('POST', /^\/api\/v1\/holds\/[^/]+\/settlement-intent$/);
+    for (let i = 0; i < 4; i++) proxy.dropNextResponse('POST', /^\/api\/v1\/holds\/[^/]+\/settle$/); // applied once, answer lost on every attempt of the client
     const bet = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_500, autoX100: 110, idempotencyKey: 'core-ren-bet-00001' });
     expect(bet.ok, JSON.stringify(bet)).toBe(true);
-    expect(proxy.dropped.some((d) => d.startsWith('POST /v1/wallet/holds'))).toBe(true);
-    expect(await coreHolds(p.accountId)).toHaveLength(1); // the retry replayed, it did not hold twice
-    expect(await coreBalance(p.accountId)).toBe(8_500);
+    expect(proxy.dropped.some((d) => /\/holds$/.test(d))).toBe(true);
+    expect(proxy.dropped.some((d) => /settlement-intent$/.test(d))).toBe(true);
+    expect(await holdRow(p.accountId)).toHaveLength(1); // the retries replayed, they did not hold twice
+    expect((await coreDb.query(`SELECT COUNT(*)::int AS n FROM settlement_intents WHERE id = $1`, [(await holdRow(p.accountId))[0]!.intent_id])).rows[0].n).toBe(1);
 
     const crash = (await settledRound(roundId)).crashX100;
     await until(async () => (await settlement(bet.bet.betId))?.status === 'DONE', 30_000, 'settlement');
-    expect(proxy.dropped.some((d) => /\/capture$/.test(d))).toBe(true);
+    expect(proxy.dropped.some((d) => /\/settle$/.test(d))).toBe(true);
     const payout = crash >= 110 ? 1_650 : 0;
     expect(await coreBalance(p.accountId)).toBe(8_500 + payout); // payout credited once
-    expect((await coreHolds(p.accountId)).map((h) => h.status)).toEqual(['captured']);
+    expect((await holdRow(p.accountId)).map((h) => h.status)).toEqual(['captured']);
   }, 90_000);
 
-  it('self-exclusion mid-session: the next bet is refused and nothing is held; the earlier bet still settles', async () => {
+  it('idempotency at Core: replaying the settle key returns the receipt without a second posting; another body or a release is refused', async () => {
+    const p = await newPlayer('sora');
+    const s = await connect(p);
+    const roundId = await nextBetting();
+    const bet = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: 101, idempotencyKey: 'core-sora-bet-0001' });
+    expect(bet.ok).toBe(true);
+    await settledRound(roundId);
+    await until(async () => (await settlement(bet.bet.betId))?.status === 'DONE', 30_000, 'settlement');
+    const after = await coreBalance(p.accountId);
+    const [hold] = await holdRow(p.accountId);
+    const payout = (await ronintBet(bet.bet.betId)).payout;
+    const token = await machineToken();
+    const same = await coreJson(`/api/v1/holds/${hold!.id}/settle`, {
+      method: 'POST', token, key: `ronin:settle:${bet.bet.betId}`,
+      body: { result: Number(payout) > 0 ? 'cash-out' : 'loss', payoutAmount: String(payout), commissionAmount: '0', asset: 'EUR' },
+    });
+    expect(same.status, JSON.stringify(same.body)).toBe(200);
+    expect(same.body).toMatchObject({ status: 'settled', settlementId: `ronin:bet:${bet.bet.betId}`, payoutAmount: String(payout) });
+    const other = await coreJson(`/api/v1/holds/${hold!.id}/settle`, {
+      method: 'POST', token, key: `ronin:settle:${bet.bet.betId}`,
+      body: { result: 'cash-out', payoutAmount: '999999', commissionAmount: '0', asset: 'EUR' },
+    });
+    expect(other.body).toMatchObject({ code: 'idempotency_conflict' });
+    const newKey = await coreJson(`/api/v1/holds/${hold!.id}/settle`, {
+      method: 'POST', token, key: `attacker-second-settle-${p.stamp}`,
+      body: { result: 'cash-out', payoutAmount: '999999', commissionAmount: '0', asset: 'EUR' },
+    });
+    expect(newKey.status).toBeGreaterThanOrEqual(400);
+    expect(await coreBalance(p.accountId)).toBe(after); // nothing moved
+    expect(await coreBalance(p.accountId)).toBe(9_000 + Number(payout));
+  }, 90_000);
+
+  it('self-exclusion mid-session: the next bet is refused and nothing is held; the accepted bet still settles', async () => {
     const p = await newPlayer('kaito');
     const s = await connect(p);
     const first = await nextBetting();
     const ok = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: null, idempotencyKey: 'core-kaito-bet-001' });
     expect(ok.ok).toBe(true);
 
-    // The player excludes themselves in Core while the round runs.
     const excl = await coreJson('/v1/responsible-gaming/restrictions', { method: 'POST', token: p.token, key: `excl-${p.stamp}`, body: { kind: 'self_exclusion', days: 30 } });
     expect(excl.status, JSON.stringify(excl.body)).toBeLessThan(300);
 
     await settledRound(first);
-    await until(async () => (await settlement(ok.bet.betId))?.status === 'DONE', 20_000, 'first bet settlement'); // lost: captured with payout 0
+    await until(async () => (await settlement(ok.bet.betId))?.status === 'DONE', 20_000, 'first bet settlement'); // accepted intention settles despite the exclusion
     await nextBetting();
     const refused = await emitAck<{ ok: boolean; error?: string }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: null, idempotencyKey: 'core-kaito-bet-002' });
     expect(refused).toEqual({ ok: false, error: 'RESPONSIBLE_GAMING_BLOCKED' });
-    expect(await coreHolds(p.accountId)).toHaveLength(1); // only the first round's hold
+    expect(await holdRow(p.accountId)).toHaveLength(1); // only the first round's hold
     expect(await coreBalance(p.accountId)).toBe(9_000);
   }, 120_000);
+
+  it('an insufficient balance is refused by Core and nothing is recorded', async () => {
+    const p = await newPlayer('poor');
+    const s = await connect(p);
+    await nextBetting();
+    const refused = await emitAck<{ ok: boolean; error?: string }>(s, SOCKET_EVENTS.placeBet, { amount: 10_001, autoX100: null, idempotencyKey: 'core-poor-bet-0001' });
+    expect(refused).toEqual({ ok: false, error: 'INSUFFICIENT_FUNDS' });
+    expect(await holdRow(p.accountId)).toHaveLength(0);
+  }, 60_000);
+
+  it('a settlement that arrives after the 1800 s grace is refused for good: parked as FAILED, the stake refunded by Core', async () => {
+    const p = await newPlayer('late');
+    const s = await connect(p);
+    const roundId = await nextBetting();
+    const bet = await emitAck<{ ok: boolean; bet: { betId: string } }>(s, SOCKET_EVENTS.placeBet, { amount: 1_000, autoX100: 110, idempotencyKey: 'core-late-bet-0001' });
+    expect(bet.ok).toBe(true);
+    await until(() => events.some((e) => e.type === 'round.started' && e.roundId === roundId), 10_000, 'round start');
+    await stopCore(); // Ronin cannot reach Core while the round ends
+    await settledRound(roundId);
+    await until(async () => (await settlement(bet.bet.betId))?.status === 'PENDING', 20_000, 'pending settlement');
+    // Time passes in Core: expiry and the fixed grace are long gone (the clock cannot be sped up here).
+    // The intention is immutable by design (trigger), so the fixture shifts the whole record three
+    // hours into the past in one transaction with triggers off, in the local test database only.
+    await coreDb.query('BEGIN');
+    await coreDb.query(`SET LOCAL session_replication_role = replica`);
+    await coreDb.query(`UPDATE settlement_intents SET registered_at = registered_at - interval '3 hours', settle_before = settle_before - interval '3 hours' WHERE id IN (SELECT intent_id FROM holds WHERE account_id = $1)`, [p.accountId]);
+    await coreDb.query(`UPDATE holds SET expires_at = expires_at - interval '3 hours' WHERE account_id = $1`, [p.accountId]);
+    await coreDb.query('COMMIT');
+    await startCore();
+    await until(async () => (await settlement(bet.bet.betId))?.status === 'FAILED', 90_000, 'FAILED settlement');
+    const st = (await roninDb.query(`SELECT last_error FROM platform_settlements WHERE bet_id = $1`, [bet.bet.betId])).rows[0];
+    expect(st.last_error).toMatch(/settlement_grace_expired|hold_expired|invalid_hold_state/);
+    expect(await coreBalance(p.accountId)).toBe(10_000); // Core returned the stake
+    // The parked row is visible to operators: health degrades (still ready) and names the cause.
+    const health = await until(async () => {
+      const h = (await fetch(`http://127.0.0.1:${RONIN_PORT}/health/ready`).then((r) => r.json())) as { status: string; ready: boolean; checks: { core: { ok: boolean; detail?: string } } };
+      return h.status === 'degraded' && h;
+    }, 20_000, 'degraded health');
+    expect(health.ready).toBe(true);
+    expect(health.checks.core.detail).toMatch(/refused by Core for good/);
+  }, 180_000);
 });

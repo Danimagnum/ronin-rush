@@ -4,9 +4,29 @@ import type { PostgresLedger } from '../wallet/postgres-ledger';
 import { CoreError, type CoreClient } from './core-client';
 
 export interface PlatformLedgerOptions {
-  houseAccountId: string;
+  /** How long a stake hold lives in Core. Settlement is possible 1800 s beyond it (fixed by Core). */
+  holdTtlSeconds?: number;
+  /** Wait before unwinding an ambiguous stake, so a late in-flight request lands first. Default 2000. */
+  abandonDelayMs?: number;
+  /** Minimum time between activation attempts for the same player. Default 5000. */
+  activationCooldownMs?: number;
   onError?: (e: unknown) => void;
 }
+
+/** Core answers that no retry can fix: the settlement is marked FAILED for a human instead of looping. */
+const PERMANENT = new Set([
+  'settlement_grace_expired',
+  'hold_expired',
+  'hold_not_found',
+  'invalid_hold_state',
+  'invalid_settlement_purpose',
+  'settlement_forbidden',
+  'settlement_intent_conflict',
+  'invalid_commission',
+  'currency_mismatch',
+  'currency_not_supported',
+  'idempotency_conflict',
+]);
 
 interface PendingSettlement {
   bet_id: string;
@@ -21,22 +41,29 @@ interface PendingSettlement {
 /**
  * PLATFORM_MODE wallet: platform-core owns players' money, Ronin owns the game decisions.
  *
- *  bet       Core: create a `stake` hold (Core enforces KYC, exclusion and loss limits in the same
- *            transaction) → Ronin: record the bet with the hold id. If recording fails, the hold
- *            is released (compensation).
+ *  entry     The player's own session token activates Ronin in Core once (explicit grant for this
+ *            player and this service) and returns their wallet id (`ensureWallet`).
+ *  bet       Core: createHold (stake; Core enforces KYC, exclusion and loss limits in that
+ *            transaction) -> registerHoldSettlementIntent (reserves the settlement window; the bet is
+ *            NOT accepted before Core confirms it) -> Ronin records the bet with the hold id.
+ *            If any later step fails, the stake is given back (settle `void`, or release).
  *  cash-out  Ronin: commit the decision + a PENDING settlement row (one transaction)
- *            → Core: capture the hold into the house with payout = stake × multiplier.
- *  loss      Ronin: commit LOST + PENDING settlement → Core: capture with payout 0.
+ *            -> Core settleHold: capture the stake into the house and pay stake x multiplier (gross).
+ *  loss      Ronin: commit LOST + PENDING settlement -> Core settleHold with payout 0.
  *
- * Captures are idempotent (`ronin:capture:<betId>`), tried immediately and then by `tick()` with
- * backoff, so a slow or unavailable Core never blocks a round or undoes a decision.
- * Users without a platform identity (bots) keep using the local double-entry ledger.
+ * Settlements are idempotent (`ronin:settle:<betId>`), tried immediately and then by `tick()` with
+ * backoff, so a slow or unavailable Core never blocks a round or undoes a decision. Core keeps the
+ * stake held for 1800 s beyond the hold's expiry once the intention exists; an answer that can never
+ * succeed (grace expired) parks the row as FAILED for reconciliation. Users without a platform
+ * identity (bots) keep using the local double-entry ledger.
  */
 export class PlatformLedger implements BetLedger {
   private readonly externalIds = new Map<string, string | null>();
-  private readonly accounts = new Map<string, { id: string; at: number }>();
+  private readonly wallets = new Map<string, string>();
+  private readonly activationTried = new Map<string, number>();
   private ticking = false;
   settled = 0;
+  failed = 0;
   /** Pushes a player's new platform balance to their sockets (wired by the round runner). */
   onBalance: ((userId: string, balance: number) => void) | null = null;
 
@@ -44,37 +71,73 @@ export class PlatformLedger implements BetLedger {
     private readonly ds: DataSource,
     private readonly local: PostgresLedger,
     readonly core: CoreClient,
-    private readonly opts: PlatformLedgerOptions,
+    private readonly opts: PlatformLedgerOptions = {},
   ) {}
+
+  /**
+   * Runs at authenticated entry with the player's own token. Never throws: a Core outage must not
+   * lock a player out of watching; betting simply stays unavailable until activation succeeds.
+   */
+  async ensureWallet(userId: string, subject: string, playerToken: string): Promise<string | null> {
+    const cached = this.wallets.get(userId);
+    if (cached) return cached;
+    const [row] = await this.ds.query(`SELECT external_wallet_id FROM users WHERE id = $1`, [userId]);
+    if (row?.external_wallet_id) {
+      this.wallets.set(userId, row.external_wallet_id);
+      return row.external_wallet_id;
+    }
+    const last = this.activationTried.get(userId) ?? 0;
+    if (Date.now() - last < (this.opts.activationCooldownMs ?? 5_000)) return null;
+    this.activationTried.set(userId, Date.now());
+    try {
+      const walletId = await this.core.activatePlayer(playerToken, subject);
+      await this.ds.query(`UPDATE users SET external_wallet_id = $2 WHERE id = $1`, [userId, walletId]);
+      this.wallets.set(userId, walletId);
+      return walletId;
+    } catch (e) {
+      this.opts.onError?.(e);
+      return null;
+    }
+  }
 
   async debitStake(op: StakeDebit): Promise<DebitResult> {
     const external = await this.externalId(op.userId);
     if (!external) return this.local.debitStake(op);
 
-    let accountId: string | undefined;
+    const walletId = await this.walletId(op.userId);
+    if (!walletId) return { ok: false, reason: 'WALLET_UNAVAILABLE' };
+    const reference = `ronin:${op.roundId}:${op.betId}`;
+    // Deterministic from the bet, so a retry of the same bet sends the identical request.
+    const expiresAt = new Date(op.placedAt + (this.opts.holdTtlSeconds ?? 3_600) * 1_000).toISOString();
+
     let holdId: string;
     try {
-      const account = await this.stakeAccount(external);
-      if (!account) return { ok: false, reason: 'WALLET_UNAVAILABLE' };
-      accountId = account;
       // Same key on every retry of this bet, so Core reserves the money at most once.
-      const hold = await this.core.createStakeHold(accountId, op.amount, `ronin:${op.roundId}:${op.betId}`, `ronin:hold:${op.idempotencyKey}`);
-      holdId = hold.id;
+      holdId = (await this.core.createStakeHold(walletId, op.amount, reference, expiresAt, `ronin:hold:${op.idempotencyKey}`)).holdId;
     } catch (e) {
-      // Ambiguous outcome (timeout, 5xx): Core may have reserved the money anyway. Replaying the
-      // same key returns that hold (or creates one), which is then released: net effect zero.
-      if (e instanceof CoreError && e.retriable && accountId) void this.abandonHold(accountId, op);
+      // Ambiguous outcome (timeout, 5xx): Core may have reserved the money anyway.
+      if (e instanceof CoreError && e.retriable) void this.abandon(walletId, op, reference, expiresAt);
       return { ok: false, reason: debitFailure(e) };
+    }
+
+    try {
+      await this.core.registerIntent(holdId, settlementId(op.betId), `ronin:intent:${op.betId}`);
+    } catch (e) {
+      // No confirmed settlement window = no bet. Definitive refusal: release now; ambiguous: the
+      // intention may exist, so unwind through the idempotent void path instead.
+      if (e instanceof CoreError && !e.retriable) await this.core.releaseHold(holdId, `ronin:release:${op.betId}`).catch((err) => this.opts.onError?.(err));
+      else void this.abandon(walletId, op, reference, expiresAt);
+      return { ok: false, reason: 'WALLET_UNAVAILABLE' };
     }
 
     try {
       await this.local.debitStake({ ...op, externalHoldId: holdId });
     } catch (e) {
       // Ronin could not take the bet (e.g. fenced out): give the money back.
-      await this.core.releaseHold(holdId, `ronin:release:${op.betId}`).catch((err) => this.opts.onError?.(err));
+      await this.void(holdId, op).catch((err) => this.opts.onError?.(err));
       throw e;
     }
-    return { ok: true, balance: await this.balance(external) };
+    return { ok: true, balance: await this.balance(walletId) };
   }
 
   async creditCashout(op: CashoutCredit): Promise<number | null> {
@@ -119,8 +182,8 @@ export class PlatformLedger implements BetLedger {
   async balanceOf(userId: string): Promise<number | null> {
     const external = await this.externalId(userId);
     if (!external) return null;
-    const account = await this.core.stakeAccount(external);
-    return account ? Number(account.balance) : 0;
+    const walletId = await this.walletId(userId);
+    return walletId ? this.core.available(walletId) : 0;
   }
 
   // ── internals ──────────────────────────────────────────────────────────
@@ -135,34 +198,57 @@ export class PlatformLedger implements BetLedger {
     return (await this.capture(s)) ?? null;
   }
 
-  /** Captures one hold; returns the player's new balance, or undefined when it must be retried. */
+  /** Settles one hold; returns the player's new balance, or undefined when it must be retried. */
   private async capture(s: PendingSettlement): Promise<number | undefined> {
+    const payout = Number(s.payout);
+    const result = payout > 0 ? 'cash-out' : 'loss';
     try {
-      await this.core.captureHold(s.hold_id, this.opts.houseAccountId, Number(s.payout), s.idempotency_key);
+      try {
+        await this.core.settle(s.hold_id, result, payout, s.idempotency_key, settlementId(s.bet_id));
+      } catch (e) {
+        // A hold from before the intention flow, or an intention whose registration was lost:
+        // register it (still inside the window or this fails for good) and settle once more.
+        if (!(e instanceof CoreError) || e.code !== 'settlement_intent_required') throw e;
+        await this.core.registerIntent(s.hold_id, settlementId(s.bet_id), `ronin:intent:${s.bet_id}`);
+        await this.core.settle(s.hold_id, result, payout, s.idempotency_key, settlementId(s.bet_id));
+      }
       await this.ds.query(`UPDATE platform_settlements SET status = 'DONE', settled_at = now(), last_error = NULL WHERE bet_id = $1`, [s.bet_id]);
       this.settled++;
-      const balance = await this.balance(s.external_user);
+      const balance = await this.balance(await this.walletId(s.user_id));
       if (balance !== null) this.onBalance?.(s.user_id, balance);
       return balance ?? 0;
     } catch (e) {
+      const permanent = e instanceof CoreError && PERMANENT.has(e.code);
       const attempts = s.attempts + 1;
       const delayS = Math.min(300, 2 ** Math.min(attempts, 8));
       await this.ds
         .query(
-          `UPDATE platform_settlements SET attempts = $2, last_error = $3, next_attempt_at = now() + make_interval(secs => $4) WHERE bet_id = $1`,
-          [s.bet_id, attempts, String((e as Error).message).slice(0, 500), delayS],
+          `UPDATE platform_settlements SET attempts = $2, last_error = $3, status = $5, next_attempt_at = now() + make_interval(secs => $4) WHERE bet_id = $1`,
+          [s.bet_id, attempts, String((e as Error).message).slice(0, 500), delayS, permanent ? 'FAILED' : 'PENDING'],
         )
         .catch(() => undefined);
+      if (permanent) this.failed++;
       this.opts.onError?.(e);
       return undefined;
     }
   }
 
-  private async abandonHold(accountId: string, op: StakeDebit): Promise<void> {
-    await new Promise((r) => setTimeout(r, 2_000));
+  /** Stake back to the player once an intention exists: capture and pay the same amount, atomically. */
+  private async void(holdId: string, op: StakeDebit): Promise<void> {
+    await this.core.settle(holdId, 'void', op.amount, `ronin:void:${op.betId}`, settlementId(op.betId));
+  }
+
+  /**
+   * Unwinds a stake whose outcome is unknown. Replaying the hold request with its own key returns
+   * the hold if Core made it (or makes it); the intention and the void are idempotent too, so the
+   * net effect is zero whatever Core had already committed.
+   */
+  private async abandon(walletId: string, op: StakeDebit, reference: string, expiresAt: string): Promise<void> {
+    await new Promise((r) => setTimeout(r, this.opts.abandonDelayMs ?? 2_000));
     try {
-      const hold = await this.core.createStakeHold(accountId, op.amount, `ronin:${op.roundId}:${op.betId}`, `ronin:hold:${op.idempotencyKey}`);
-      await this.core.releaseHold(hold.id, `ronin:release:${op.betId}`);
+      const hold = await this.core.createStakeHold(walletId, op.amount, reference, expiresAt, `ronin:hold:${op.idempotencyKey}`);
+      await this.core.registerIntent(hold.holdId, settlementId(op.betId), `ronin:intent:${op.betId}`);
+      await this.void(hold.holdId, op);
     } catch (e) {
       this.opts.onError?.(e);
     }
@@ -176,29 +262,32 @@ export class PlatformLedger implements BetLedger {
     return ext;
   }
 
-  private async stakeAccount(external: string): Promise<string | null> {
-    const cached = this.accounts.get(external);
-    if (cached && Date.now() - cached.at < 5 * 60_000) return cached.id;
-    const account = await this.core.stakeAccount(external);
-    if (account) this.accounts.set(external, { id: account.id, at: Date.now() });
-    return account?.id ?? null;
+  private async walletId(userId: string): Promise<string | null> {
+    const cached = this.wallets.get(userId);
+    if (cached) return cached;
+    const [row] = await this.ds.query(`SELECT external_wallet_id FROM users WHERE id = $1`, [userId]);
+    if (row?.external_wallet_id) this.wallets.set(userId, row.external_wallet_id);
+    return row?.external_wallet_id ?? null;
   }
 
-  private async balance(external: string): Promise<number | null> {
+  private async balance(walletId: string | null): Promise<number | null> {
+    if (!walletId) return null;
     try {
-      const account = await this.core.stakeAccount(external);
-      return account ? Number(account.balance) : null;
+      return await this.core.available(walletId);
     } catch {
       return null; // the balance push is a nicety; the money movement already succeeded
     }
   }
 }
 
+/** Stable business id of a bet's settlement, registered in Core before the bet is accepted. */
+export const settlementId = (betId: string): string => `ronin:bet:${betId}`;
+
 /** Maps a Core refusal to the game's error codes. Nothing has been charged in any of these cases. */
 export function debitFailure(e: unknown): 'INSUFFICIENT_FUNDS' | 'RESPONSIBLE_GAMING_BLOCKED' | 'WALLET_UNAVAILABLE' {
   if (e instanceof CoreError) {
-    if (e.status === 422 && /insufficient/i.test(e.code)) return 'INSUFFICIENT_FUNDS';
-    if (e.status === 403) return 'RESPONSIBLE_GAMING_BLOCKED';
+    if (e.code === 'insufficient_funds') return 'INSUFFICIENT_FUNDS';
+    if (['account_restricted', 'loss_limit_exceeded', 'kyc_required', 'forbidden'].includes(e.code)) return 'RESPONSIBLE_GAMING_BLOCKED';
   }
   return 'WALLET_UNAVAILABLE';
 }
