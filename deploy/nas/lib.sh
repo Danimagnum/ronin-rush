@@ -2,6 +2,9 @@
 set -eu
 # DSM's sudo keeps a short secure_path: make docker and docker-compose reachable.
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+# docker-compose 1.28 gives up after 60 s waiting for the Docker daemon; right after loading a
+# release the NAS can take longer to recreate a container (seen on 2026-11-11 with 387a3b2).
+export COMPOSE_HTTP_TIMEOUT="${COMPOSE_HTTP_TIMEOUT:-300}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 PROJECT=ronin-rush

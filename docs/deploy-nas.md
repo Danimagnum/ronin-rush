@@ -150,6 +150,12 @@ broker is down the game is unaffected, and events wait in the outbox.
 - **API unhealthy on the first start, then healthy minutes later.** A cold start on the NAS
   spends about 90 s just loading modules (Sentry ~40 s, Nest, TypeORM), with no log output until
   Nest starts. The NAS compose gives the API a 300 s start period and `deploy.sh` waits up to 7 min.
+- **`UnixHTTPConnectionPool … Read timed out (read timeout=60)` during `deploy.sh`.** docker-compose
+  stopped waiting for the Docker daemon while it recreated a container (the NAS is slow right
+  after loading a release). The scripts now set `COMPOSE_HTTP_TIMEOUT=300`; with an older copy,
+  run `sudo env COMPOSE_HTTP_TIMEOUT=300 sh deploy.sh <tag>` again: it is safe to repeat.
+- **`sudo: docker-compose: command not found`** in a manual command: DSM's sudo has a short PATH.
+  Use `sudo /usr/local/bin/docker-compose …`; the scripts set the PATH themselves.
 - **Blank iframe:** the browser console shows `frame-ancestors` if the embedding page isn't
   listed in `FRAME_ANCESTORS` in `.env`. Add it and run `sudo docker-compose -p ronin-rush up -d proxy`.
 - **Funnel:** `tailscale funnel status`. To remove only this route:
