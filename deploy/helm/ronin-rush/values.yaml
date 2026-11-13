@@ -58,7 +58,7 @@ ingress:
     nginx.ingress.kubernetes.io/session-cookie-name: ronin-route
     # Only the portfolio may embed the game.
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu";
+      more_set_headers "Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu http://127.0.0.1:8081";
 
 podDisruptionBudget:
   enabled: true

@@ -101,7 +101,7 @@ services:
     environment:
       API_UPSTREAM: 127.0.0.1:3001
       WEB_UPSTREAM: 127.0.0.1:3000
-      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-https://danielgil.eu https://www.danielgil.eu}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-https://danielgil.eu https://www.danielgil.eu http://127.0.0.1:8081}
     network_mode: "service:redis"
     mem_limit: 64m
     depends_on:

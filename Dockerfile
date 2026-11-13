@@ -59,6 +59,6 @@ CMD ["node", "apps/web/server.js"]
 FROM nginx:1.27-alpine AS proxy
 COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 ENV LISTEN_PORT=8080 API_UPSTREAM=api:3001 WEB_UPSTREAM=web:3000 \
-    FRAME_ANCESTORS="https://danielgil.eu https://www.danielgil.eu"
+    FRAME_ANCESTORS="https://danielgil.eu https://www.danielgil.eu http://127.0.0.1:8081"
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD wget -qO- "http://127.0.0.1:${LISTEN_PORT}/nginx-health" >/dev/null || exit 1
