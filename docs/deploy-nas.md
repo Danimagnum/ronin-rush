@@ -46,7 +46,7 @@ is about 350–400 MB. The optional own Kafka adds a 640 MB cap.
 The frontend is built with an **empty `NEXT_PUBLIC_API_URL`**, so the browser calls `/api` and
 `/socket.io` on its own origin. The public URL is therefore not baked into the bundle, and the
 same image works on any host. CORS stays closed (`CORS_ORIGIN` = the public origin), and nginx
-sends `Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu`.
+sends `Content-Security-Policy: frame-ancestors 'self' https://danielgil.eu https://www.danielgil.eu http://127.0.0.1:8081`.
 
 ## First install
 
