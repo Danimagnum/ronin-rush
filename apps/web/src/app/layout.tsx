@@ -12,7 +12,10 @@ export const viewport: Viewport = { themeColor: '#131a2c', width: 'device-width'
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" translate="no">
+      <head>
+        <meta name="google" content="notranslate" />
+      </head>
       <body>
         <AppShell>{children}</AppShell>
       </body>
