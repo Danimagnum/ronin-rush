@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: 'A live, provably fair duel: cash out before the oni lands the final blow. Play money only.',
 };
 
-export const viewport: Viewport = { themeColor: '#131a2c', width: 'device-width', initialScale: 1 };
+export const viewport: Viewport = { themeColor: '#2a2018', width: 'device-width', initialScale: 1, viewportFit: 'cover' };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (

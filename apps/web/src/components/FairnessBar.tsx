@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useState } from 'react';
+import { CheckIcon, CopyIcon } from './icons';
 import { mult, shortHash } from '@/lib/format';
 import { useGame } from '@/lib/store';
 
@@ -15,11 +16,11 @@ function Copyable({ value, label }: { value: string; label: string }) {
           setTimeout(() => setCopied(false), 1200);
         });
       }}
-      className="tabular rounded px-1 text-left font-medium text-washi/90 hover:text-kin"
+      className="tabular inline-flex min-h-8 items-center gap-1 px-1 text-left font-medium text-washi hover:text-kin"
       aria-label={`Copy ${label}`}
       title={value}
     >
-      {copied ? 'Copied' : shortHash(value)}
+      {copied ? <><CheckIcon /> Copied</> : <>{shortHash(value)} <CopyIcon className="text-xs opacity-60" /></>}
     </button>
   );
 }
@@ -30,7 +31,7 @@ export function FairnessBar() {
   const last = useGame((s) => s.lastSettled);
   const fairness = useGame((s) => s.fairness);
   return (
-    <section aria-label="Provably fair" className="grid gap-x-6 gap-y-2 text-sm text-mist sm:grid-cols-[auto_auto_1fr]">
+    <section aria-label="Provably fair" className="grid gap-x-6 gap-y-2 border-t-4 border-hinoki pt-2 text-sm text-washi/75 sm:grid-cols-[auto_auto_1fr]">
       <div>
         Round {round ? `#${round.roundId}` : '—'} hash {round ? <Copyable value={round.seedHash} label="round hash" /> : '—'}
       </div>

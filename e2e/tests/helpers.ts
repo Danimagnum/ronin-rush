@@ -34,7 +34,7 @@ export async function balanceCents(page: Page): Promise<number> {
 
 export async function playAsGuest(page: Page): Promise<string> {
   await page.goto('/');
-  await page.getByRole('banner').getByRole('button', { name: 'Play', exact: true }).click();
+  await page.getByRole('banner').getByRole('button', { name: 'Enter the dojo', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Play as guest' }).click();
   const name = page.locator('header').getByText(/^guest_[0-9a-f]{6}$/);
   await expect(name).toBeVisible();

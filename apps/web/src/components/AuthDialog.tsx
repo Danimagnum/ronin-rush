@@ -39,17 +39,17 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
         ref={ref}
         onClose={onClose}
         aria-labelledby="auth-title"
-        className="m-auto w-[min(92vw,400px)] rounded-[var(--radius-panel)] bg-ai-800 p-0 text-washi backdrop:bg-ai-950/80"
+        className="cut m-auto overscroll-contain w-[min(92vw,400px)] bg-washi p-0 text-sumi backdrop:bg-sumi/80"
       >
-        <div className="p-6">
+        <div className="border-t-[10px] border-beni p-6">
           <h2 id="auth-title" className="font-display text-2xl font-extrabold">
             Sign in on the platform
           </h2>
-          <p className="mt-2 text-sm text-mist">
+          <p className="mt-2 text-sm text-sumi/75">
             Accounts, balances and limits for this table are managed by the platform. Open Ronin Rush from your
             platform portal to play.
           </p>
-          <button type="button" onClick={onClose} className="mt-5 w-full rounded-xl bg-ai-700 py-3 font-display font-bold text-washi hover:bg-ai-600">
+          <button type="button" onClick={onClose} className="mt-5 w-full cut-sm bg-sumi py-3 font-display font-bold text-washi">
             Close
           </button>
         </div>
@@ -61,24 +61,24 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
       ref={ref}
       onClose={onClose}
       aria-labelledby="auth-title"
-      className="m-auto w-[min(92vw,400px)] rounded-[var(--radius-panel)] bg-ai-800 p-0 text-washi backdrop:bg-ai-950/80"
+      className="cut m-auto overscroll-contain w-[min(92vw,400px)] bg-washi p-0 text-sumi backdrop:bg-sumi/80"
     >
-      <div className="p-6">
+      <div className="border-t-[10px] border-beni p-6">
         <h2 id="auth-title" className="font-display text-2xl font-extrabold">
           Enter the dojo
         </h2>
-        <p className="mt-1 text-sm text-mist">Play money only. You start with 1,000 ryō.</p>
+        <p className="mt-1 text-sm text-sumi/75">Play money only. You start with 1,000 ryō.</p>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => void run(api.guest)}
-          className="mt-5 w-full rounded-xl bg-kin py-3 font-display text-lg font-extrabold text-ai-950 hover:bg-[#e2bf72] disabled:opacity-60"
+          className="cut btn-flick mt-5 w-full bg-sumi py-3.5 font-display text-xl font-extrabold text-washi disabled:opacity-60"
         >
           Play as guest
         </button>
 
-        <div className="mt-6 flex gap-4 border-b border-ai-700 text-sm" role="tablist">
+        <div className="mt-6 flex gap-4 border-b-2 border-sumi/20 text-sm" role="tablist">
           {(['signin', 'register'] as const).map((m) => (
             <button
               key={m}
@@ -86,7 +86,7 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
               aria-selected={mode === m}
               type="button"
               onClick={() => setMode(m)}
-              className={`-mb-px border-b-2 pb-2 ${mode === m ? 'border-kin text-washi' : 'border-transparent text-mist hover:text-washi'}`}
+              className={`-mb-0.5 border-b-4 pb-2 ${mode === m ? 'border-beni font-bold text-sumi' : 'border-transparent text-sumi/65 hover:text-sumi'}`}
             >
               {m === 'signin' ? 'Sign in' : 'Create account'}
             </button>
@@ -100,18 +100,18 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
           }}
         >
           <label className="grid gap-1 text-sm">
-            <span className="text-mist">Username</span>
+            <span className="font-medium text-sumi/80">Username</span>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
               required
               pattern="[A-Za-z0-9_]{3,20}"
-              className="rounded-lg bg-ai-950 px-3 py-2 ring-1 ring-ai-600 outline-none focus:ring-kin"
+              className="h-11 bg-white/55 px-3 text-base shadow-[inset_0_-3px_0_rgb(5_7_13/0.35)] outline-none focus:shadow-[inset_0_-3px_0_var(--color-beni)]"
             />
           </label>
           <label className="grid gap-1 text-sm">
-            <span className="text-mist">Password</span>
+            <span className="font-medium text-sumi/80">Password</span>
             <input
               type="password"
               value={password}
@@ -119,19 +119,19 @@ export function AuthDialog({ open, onClose, onAuthed }: { open: boolean; onClose
               autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
               required
               minLength={8}
-              className="rounded-lg bg-ai-950 px-3 py-2 ring-1 ring-ai-600 outline-none focus:ring-kin"
+              className="h-11 bg-white/55 px-3 text-base shadow-[inset_0_-3px_0_rgb(5_7_13/0.35)] outline-none focus:shadow-[inset_0_-3px_0_var(--color-beni)]"
             />
           </label>
           {error ? (
-            <p role="alert" className="text-sm text-[#e8909c]">
+            <p role="alert" className="text-sm font-medium text-beni">
               {error}
             </p>
           ) : null}
           <div className="mt-1 flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-mist hover:text-washi">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-sumi/75 hover:text-sumi">
               Cancel
             </button>
-            <button type="submit" disabled={busy} className="rounded-lg bg-ai-600 px-4 py-2 text-sm font-medium hover:bg-ai-700 disabled:opacity-60">
+            <button type="submit" disabled={busy} className="cut-sm bg-beni px-5 py-2.5 text-sm font-bold text-washi disabled:opacity-60">
               {mode === 'signin' ? 'Sign in' : 'Create account'}
             </button>
           </div>

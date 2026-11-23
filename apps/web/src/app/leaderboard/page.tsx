@@ -20,8 +20,8 @@ export default function LeaderboardPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <h1 className="font-display text-4xl font-extrabold">Today in the dojo</h1>
-      <p className="mt-2 text-mist">Resets at midnight UTC{boards ? `, ${boards.date}` : ''}. Updates after every round.</p>
-      {error ? <p className="mt-4 text-[#e8909c]">{error}</p> : null}
+      <p className="mt-2 text-washi/70">Resets at midnight UTC{boards ? `, ${boards.date}` : ''}. Updates after every round.</p>
+      {error ? <p className="mt-4 text-beni-soft">{error}</p> : null}
       <div className="mt-8 grid gap-10 md:grid-cols-2">
         <Board title="Best cash-out" entries={boards?.bestMultiplier ?? []} me={me} render={(v) => <Mult x100={v} className="text-kin" />} />
         <Board title="Biggest win" entries={boards?.biggestWin ?? []} me={me} render={(v) => <span className="tabular text-kin">+{money(v)}</span>} />
@@ -34,14 +34,14 @@ function Board({ title, entries, me, render }: { title: string; entries: Leaderb
   return (
     <section aria-label={title}>
       <h2 className="font-display text-2xl font-semibold">{title}</h2>
-      {entries.length === 0 ? <p className="mt-4 text-sm text-mist">No cash-outs yet today.</p> : null}
+      {entries.length === 0 ? <p className="mt-4 text-sm text-washi/70">No cash-outs yet today.</p> : null}
       <ol className="mt-4">
         {entries.map((e, i) => (
-          <li key={e.userId} className={`grid grid-cols-[2rem_1fr_auto] items-baseline gap-3 border-b border-ai-700/60 py-2.5 ${e.userId === me ? 'bg-kin/5' : ''}`}>
-            <span className={`tabular font-display text-lg ${i === 0 ? 'text-kin' : 'text-mist'}`}>{i + 1}</span>
+          <li key={e.userId} className={`grid grid-cols-[2rem_1fr_auto] items-baseline gap-3 border-b border-washi/10 py-2.5 ${e.userId === me ? 'bg-kin/5' : ''}`}>
+            <span className={`tabular font-display text-lg ${i === 0 ? 'text-kin' : 'text-washi/70'}`}>{i + 1}</span>
             <span className="truncate">
               {e.username}
-              {e.isBot ? <span className="ml-2 text-xs text-mist/70">bot</span> : null}
+              {e.isBot ? <span className="ml-2 text-xs text-washi/70/70">bot</span> : null}
             </span>
             {render(e.value)}
           </li>

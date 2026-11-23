@@ -26,10 +26,10 @@ export function SystemView() {
   }, [connection]);
 
   return (
-    <section aria-label="System view" className="rounded-[var(--radius-panel)] border border-ai-700 bg-ai-950/60 p-4 sm:p-5">
+    <section aria-label="System view" className="border-t-[6px] border-hinoki bg-ai-900/70 p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-display text-xl font-semibold">System view</h2>
-        <p className="text-sm text-mist">
+        <p className="text-sm text-washi/70">
           {m ? (
             <>
               Leader <span className="text-washi">{m.leader}</span>, fencing token <span className="tabular text-washi">{m.fencingToken ?? '—'}</span>
@@ -50,7 +50,7 @@ export function SystemView() {
           <ServerClock />
           <Stat label="Your offset" value={`${offset >= 0 ? '+' : '−'}${Math.abs(offset).toFixed(1)} ms`} />
           <Stat label="Round trip" value={latency !== null ? `${latency} ms` : '—'} />
-          <p className="mt-2 text-xs leading-snug text-mist">The server owns time. Your browser only estimates the offset to animate smoothly; payouts use the server&apos;s receive time.</p>
+          <p className="mt-2 text-xs leading-snug text-washi/70">The server owns time. Your browser only estimates the offset to animate smoothly; payouts use the server&apos;s receive time.</p>
         </Tile>
 
         <Tile title="Throughput">
@@ -69,7 +69,7 @@ export function SystemView() {
 
         <Tile title="This browser">
           <SceneStats />
-          <p className="mt-2 text-xs leading-snug text-mist">The scene drops to a lighter render on its own if it cannot hold 45 fps.</p>
+          <p className="mt-2 text-xs leading-snug text-washi/70">The scene drops to a lighter render on its own if it cannot hold 45 fps.</p>
         </Tile>
       </div>
 
@@ -77,7 +77,7 @@ export function SystemView() {
         <Tile title={`Instances${m ? ` (${m.instances.length})` : ''}`}>
           {m ? (
             <table className="w-full text-left text-sm">
-              <thead className="text-xs text-mist">
+              <thead className="text-xs text-washi/70">
                 <tr>
                   <th className="pb-1 font-normal">Instance</th>
                   <th className="pb-1 text-right font-normal">Sockets</th>
@@ -86,12 +86,12 @@ export function SystemView() {
               </thead>
               <tbody>
                 {m.instances.map((i) => (
-                  <tr key={i.instanceId} className="border-t border-ai-700/60">
+                  <tr key={i.instanceId} className="border-t border-washi/10">
                     <td className="py-1.5">
-                      {i.instanceId} <span className={`text-xs ${i.leader ? 'text-kin' : 'text-mist'}`}>{i.leader ? 'leader' : 'relay'}</span>
+                      {i.instanceId} <span className={`text-xs ${i.leader ? 'text-kin' : 'text-washi/70'}`}>{i.leader ? 'leader' : 'relay'}</span>
                     </td>
                     <td className="tabular py-1.5 text-right">{i.connections}</td>
-                    <td className="tabular py-1.5 text-right text-mist" title="Offset to the shared Redis clock">
+                    <td className="tabular py-1.5 text-right text-washi/70" title="Offset to the shared Redis clock">
                       {i.clockOffsetMs >= 0 ? '+' : '−'}
                       {Math.abs(i.clockOffsetMs).toFixed(2)} ms
                     </td>
@@ -106,21 +106,21 @@ export function SystemView() {
         <Tile title="Kafka events">
           {m ? (
             <>
-              <p className="text-xs text-mist">{m.kafka.mode === 'kafka' ? 'Published to Kafka from the outbox.' : 'Dry run: the outbox is drained but no broker is configured.'}</p>
+              <p className="text-xs text-washi/70">{m.kafka.mode === 'kafka' ? 'Published to Kafka from the outbox.' : 'Dry run: the outbox is drained but no broker is configured.'}</p>
               <Stat label="Events published since start" value={String(m.kafka.published)} />
               <ul className="mt-2 grid gap-1 text-xs">
                 {m.kafka.recent.map((e) => (
-                  <li key={e.eventId} className="grid grid-cols-[1fr_auto] gap-2 border-t border-ai-700/60 pt-1">
+                  <li key={e.eventId} className="grid grid-cols-[1fr_auto] gap-2 border-t border-washi/10 pt-1">
                     <span className="truncate text-washi/90">{e.type}</span>
-                    <span className="tabular text-mist">
+                    <span className="tabular text-washi/70">
                       #{e.key} {new Date(e.occurredAt).toLocaleTimeString('en-GB')}
                     </span>
                   </li>
                 ))}
               </ul>
               {m.kafka.consumer ? (
-                <div className="mt-3 border-t border-ai-700 pt-2">
-                  <p className="text-xs text-mist">
+                <div className="mt-3 border-t border-washi/20 pt-2">
+                  <p className="text-xs text-washi/70">
                     Read back by consumer group <span className="text-washi/90">{m.kafka.consumer.groupId}</span>
                   </p>
                   <div className="grid grid-cols-2 gap-x-4">
@@ -131,10 +131,10 @@ export function SystemView() {
                     {m.kafka.consumer.recent.map((e) => (
                       <li
                         key={`${e.topic}-${e.partition}-${e.offset}`}
-                        className="grid grid-cols-[1fr_auto] gap-2 border-t border-ai-700/60 pt-1"
+                        className="grid grid-cols-[1fr_auto] gap-2 border-t border-washi/10 pt-1"
                       >
                         <span className="truncate text-washi/90">{e.topic}</span>
-                        <span className="tabular text-mist">
+                        <span className="tabular text-washi/70">
                           p{e.partition} @{e.offset} · {e.endToEndMs} ms
                         </span>
                       </li>
@@ -148,7 +148,7 @@ export function SystemView() {
 
         {m?.platform ? (
           <Tile title="platform-core wallet">
-            <p className="text-xs text-mist">Players' stakes are holds in platform-core; captures are settled from a command outbox.</p>
+            <p className="text-xs text-washi/70">Players' stakes are holds in platform-core; captures are settled from a command outbox.</p>
             <div className="grid grid-cols-2 gap-x-4">
               <Stat label="Pending captures" value={String(m.platform.pendingSettlements)} tone={m.platform.pendingSettlements > 0 ? 'text-kin' : undefined} />
               <Stat label="Settled" value={String(m.platform.settled)} />
@@ -168,14 +168,14 @@ export function SystemView() {
               <Stat
                 label="Sum of every posting (must be 0)"
                 value={money(m.ledger.sumOfPostings)}
-                tone={m.ledger.sumOfPostings === 0 ? 'text-take' : 'text-[#e8909c]'}
+                tone={m.ledger.sumOfPostings === 0 ? 'text-take' : 'text-beni-soft'}
               />
               <ul className="mt-2 grid gap-1 text-xs">
                 {m.ledger.recent.map((e) => (
-                  <li key={e.id} className="grid grid-cols-[4.5rem_1fr_auto] gap-2 border-t border-ai-700/60 pt-1">
-                    <span className="text-mist">{e.txType.toLowerCase().replace('_', ' ')}</span>
+                  <li key={e.id} className="grid grid-cols-[4.5rem_1fr_auto] gap-2 border-t border-washi/10 pt-1">
+                    <span className="text-washi/70">{e.txType.toLowerCase().replace('_', ' ')}</span>
                     <span className="truncate text-washi/90">{e.account}</span>
-                    <span className={`tabular ${e.amount >= 0 ? 'text-take' : 'text-[#e07383]'}`}>
+                    <span className={`tabular ${e.amount >= 0 ? 'text-take' : 'text-beni-soft'}`}>
                       {e.amount >= 0 ? '+' : '−'}
                       {money(Math.abs(e.amount))}
                     </span>
@@ -192,7 +192,7 @@ export function SystemView() {
 
 function Tile({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="rounded-lg bg-ai-800/70 p-3">
+    <div className="cut-sm bg-ai-800/80 p-3">
       <h3 className="mb-2 text-sm font-medium text-washi">{title}</h3>
       {children}
     </div>
@@ -202,7 +202,7 @@ function Tile({ title, children }: { title: string; children: ReactNode }) {
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5 text-sm">
-      <span className="text-mist">{label}</span>
+      <span className="text-washi/70">{label}</span>
       <span className={`tabular ${tone ?? 'text-washi'}`}>{value}</span>
     </div>
   );

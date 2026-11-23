@@ -26,6 +26,10 @@ export interface GameState {
   lastSettled: { roundId: number; seed: string; crashX100: number } | null;
   fairness: { commitment: string; publicSalt: string } | null;
   sound: boolean;
+  /** 'low' trims the scene (fewer bamboo, no impact field) on top of the automatic low-power check. */
+  effects: 'auto' | 'low';
+  /** Epoch ms until which this device refuses new bets (the player's own break). 0 when not resting. */
+  breakUntil: number;
   systemView: boolean;
   /** Latest push from the leader while the System view is open; last 60 bets/s samples for the sparkline. */
   system: SystemMetrics | null;
@@ -71,6 +75,8 @@ export const useGame = create<GameState>((set, get) => ({
   lastSettled: null,
   fairness: null,
   sound: false,
+  effects: 'auto',
+  breakUntil: 0,
   systemView: false,
   system: null,
   betsHistory: [],

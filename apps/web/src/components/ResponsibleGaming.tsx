@@ -1,9 +1,9 @@
 export function ResponsibleGaming() {
   return (
-    <footer className="border-t border-ai-700/70">
-      <div className="mx-auto max-w-[1400px] px-4 py-4 text-sm leading-relaxed text-mist sm:px-6">
+    <footer className="floor">
+      <div className="mx-auto max-w-[1400px] px-4 py-4 text-sm leading-relaxed text-washi/75 sm:px-6">
         <p>
-          <strong className="font-medium text-washi">Play money only.</strong> Ryō have no value, cannot be bought and cannot be
+          <strong className="font-bold text-washi">Play money only.</strong> Ryō have no value, cannot be bought and cannot be
           withdrawn. Ronin Rush is a portfolio project that demonstrates real-time game engineering; it offers no prizes.
         </p>
         <p className="mt-1">

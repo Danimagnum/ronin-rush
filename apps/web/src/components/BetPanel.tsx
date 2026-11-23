@@ -3,10 +3,11 @@ import { GAME_DEFAULTS, payoutFor } from '@ronin/shared';
 import { useEffect, useRef, useState } from 'react';
 import { liveMultiplier } from './GameStage';
 import { CURRENCY } from '@/lib/config';
-import { money, mult, signedMoney } from '@/lib/format';
+import { buzz, useBetUi } from '@/lib/bet-ui';
+import { duration, money, mult, signedMoney } from '@/lib/format';
 import { commands } from '@/lib/realtime';
-import { loadPref, savePref } from '@/lib/session';
 import { selectMyBet, useGame } from '@/lib/store';
+import { useShell } from './AppShell';
 
 const CHIPS = [100, 500, 1_000, 5_000, 10_000]; // cents: 1, 5, 10, 50, 100 ryō
 
@@ -27,35 +28,138 @@ const ERRORS: Record<string, string> = {
   IDENTITY_MISMATCH: 'The portal sent a token for a different player. Reopen the game from the portal.',
 };
 
-export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
+/** Everything the two halves of the bet UI need to agree on. */
+function useBetState() {
   const user = useGame((s) => s.user);
-  const platformMode = useGame((s) => s.platformMode);
-  const sessionExpired = useGame((s) => s.sessionExpired);
   const round = useGame((s) => s.round);
   const myBet = useGame(selectMyBet);
-  const [amount, setAmount] = useState(1_000);
-  const [autoOn, setAutoOn] = useState(false);
-  const [autoText, setAutoText] = useState('2.00');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const payoutRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    setAmount(loadPref('amount', 1_000));
-    setAutoOn(loadPref('autoOn', false));
-    setAutoText(loadPref('autoText', '2.00'));
-  }, []);
-  useEffect(() => savePref('amount', amount), [amount]);
-  useEffect(() => savePref('autoOn', autoOn), [autoOn]);
-  useEffect(() => savePref('autoText', autoText), [autoText]);
-  useEffect(() => setError(null), [round?.roundId]);
-
+  const breakUntil = useGame((s) => s.breakUntil);
+  const { amount, autoOn, autoText } = useBetUi();
   const autoX100 = autoOn ? Math.round(parseFloat(autoText) * 100) : null;
   const autoValid = autoX100 === null || (Number.isFinite(autoX100) && autoX100 >= GAME_DEFAULTS.minAutoX100);
   const amountValid = amount >= GAME_DEFAULTS.minBetCents && amount <= GAME_DEFAULTS.maxBetCents && (!user || amount <= user.balance);
+  const lockedInputs = !!myBet || round?.phase === 'RUNNING';
+  return { user, round, myBet, breakUntil, amount, autoOn, autoText, autoX100, autoValid, amountValid, lockedInputs };
+}
+
+/** Stake on a strip of washi, koban coins to add to it, and the auto cash-out. */
+export function StakeControls() {
+  const { amount, autoOn, autoText, autoValid, lockedInputs } = useBetState();
+  const patch = useBetUi((s) => s.patch);
+  const hydrate = useBetUi((s) => s.hydrate);
+  const round = useGame((s) => s.round);
+  useEffect(() => hydrate(), [hydrate]);
+  useEffect(() => patch({ error: null }), [round?.roundId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (cents: number) => patch({ amount: Math.max(0, Math.min(GAME_DEFAULTS.maxBetCents, cents)) });
+
+  return (
+    <section aria-label="Bet" className="min-w-0 pt-1">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-3 md:grid-cols-[minmax(0,1fr)_170px]">
+        <div className="min-w-0">
+          <label htmlFor="stake" className="text-sm font-medium text-washi/80">
+            Stake
+          </label>
+          <div className="mt-1.5 flex items-stretch gap-2">
+            <div className="slip cut relative min-w-0 flex-1" aria-disabled={lockedInputs}>
+              <input
+                id="stake"
+                name="stake"
+                autoComplete="off"
+                spellCheck={false}
+                inputMode="decimal"
+                disabled={lockedInputs}
+                value={money(amount).replace(/,/g, '')}
+                onChange={(e) => {
+                  const v = Math.round(parseFloat(e.target.value || '0') * 100);
+                  if (Number.isFinite(v)) set(v);
+                }}
+                className="tabular h-14 w-full bg-transparent pr-14 pl-4 font-display text-3xl font-extrabold outline-none disabled:opacity-70"
+              />
+              <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-sm font-bold opacity-70">{CURRENCY}</span>
+            </div>
+            <button type="button" disabled={lockedInputs} onClick={() => set(Math.max(GAME_DEFAULTS.minBetCents, Math.floor(amount / 2)))} aria-label="Halve the stake" className="cut-sm btn-flick w-12 shrink-0 bg-ai-700 font-display text-lg font-bold hover:bg-ai-600 disabled:opacity-40">
+              ½
+            </button>
+            <button type="button" disabled={lockedInputs} onClick={() => set(Math.min(GAME_DEFAULTS.maxBetCents, amount * 2))} aria-label="Double the stake" className="cut-sm btn-flick w-12 shrink-0 bg-ai-700 font-display text-lg font-bold hover:bg-ai-600 disabled:opacity-40">
+              2×
+            </button>
+          </div>
+
+          <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none]" role="group" aria-label="Add to stake">
+            {CHIPS.map((c) => (
+              <button key={c} type="button" disabled={lockedInputs} onClick={() => set(amount + c)} className="koban tabular shrink-0" aria-label={`Add ${c / 100} ${CURRENCY}`}>
+                +{c / 100}
+              </button>
+            ))}
+            <button type="button" disabled={lockedInputs} onClick={() => set(GAME_DEFAULTS.minBetCents)} className="shrink-0 px-3 py-2 text-sm text-washi/75 hover:text-washi disabled:opacity-40">
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 md:block">
+          <div className="flex items-center justify-between gap-3 md:gap-2">
+            <label htmlFor="auto" className="text-sm font-medium text-washi/80">
+              Auto cash-out
+            </label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoOn}
+              aria-label="Enable auto cash-out"
+              disabled={lockedInputs}
+              onClick={() => patch({ autoOn: !autoOn })}
+              className={`relative h-7 w-12 shrink-0 disabled:opacity-40 ${autoOn ? 'bg-kin' : 'bg-ai-600'}`}
+            >
+              <span className={`absolute top-1 left-0 h-5 w-5 transition-transform ${autoOn ? 'translate-x-6 bg-sumi' : 'translate-x-1 bg-washi'}`} />
+            </button>
+          </div>
+          <div className="slip cut relative w-36 shrink-0 md:mt-1.5 md:w-auto" aria-disabled={!autoOn || lockedInputs}>
+            <input
+              id="auto"
+              name="auto-cashout"
+              autoComplete="off"
+              spellCheck={false}
+              inputMode="decimal"
+              disabled={!autoOn || lockedInputs}
+              value={autoText}
+              onChange={(e) => patch({ autoText: e.target.value.replace(/[^0-9.]/g, '') })}
+              onBlur={() => {
+                const v = parseFloat(autoText);
+                patch({ autoText: Number.isFinite(v) ? Math.max(1.01, v).toFixed(2) : '2.00' });
+              }}
+              aria-invalid={!autoValid}
+              className="tabular h-12 w-full bg-transparent pr-9 pl-4 font-display text-2xl md:h-14 md:text-3xl font-extrabold outline-none disabled:opacity-60 aria-[invalid=true]:text-beni"
+            />
+            <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-lg font-bold opacity-70">×</span>
+          </div>
+          <p className="mt-1.5 hidden text-xs leading-snug text-washi/65 md:block">The server cashes you out at exactly this multiplier.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** The one button. Paper while betting, gold and beating while a cash-out is possible. */
+export function ActionDock() {
+  const { user, round, myBet, breakUntil, amount, autoX100, autoValid, amountValid } = useBetState();
+  const platformMode = useGame((s) => s.platformMode);
+  const sessionExpired = useGame((s) => s.sessionExpired);
+  const { busy, error } = useBetUi();
+  const patch = useBetUi((s) => s.patch);
+  const { requestAuth } = useShell();
+  const payoutRef = useRef<HTMLSpanElement>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const resting = breakUntil > now;
+  useEffect(() => {
+    if (breakUntil <= Date.now()) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [breakUntil]);
 
   const phase = round?.phase;
-  const canBet = !!user && phase === 'BETTING' && !myBet && amountValid && autoValid && !busy;
+  const canBet = !!user && phase === 'BETTING' && !myBet && amountValid && autoValid && !busy && !resting;
   const canCashOut = !!user && phase === 'RUNNING' && myBet?.status === 'ACTIVE' && !busy;
 
   // Live potential payout on the cash-out button.
@@ -70,20 +174,31 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
     return () => cancelAnimationFrame(raf);
   }, [canCashOut, myBet]);
 
+  // The beat of the button follows the duel's tier.
+  const [tier, setTier] = useState(0);
+  useEffect(() => {
+    if (!canCashOut) return;
+    const t = setInterval(() => {
+      const x = liveMultiplier().x100;
+      setTier(x >= 500 ? 2 : x >= 200 ? 1 : 0);
+    }, 150);
+    return () => clearInterval(t);
+  }, [canCashOut]);
+
   async function act() {
-    if (!user) return platformMode ? undefined : onNeedAuth();
-    if (sessionExpired) return setError(ERRORS.AUTH_EXPIRED!);
-    setError(null);
+    if (!user) return platformMode ? undefined : requestAuth();
+    if (sessionExpired) return patch({ error: ERRORS.AUTH_EXPIRED! });
+    patch({ error: null });
     if (canCashOut && round) {
-      setBusy(true);
+      patch({ busy: true });
       const res = await commands.cashOut(round.roundId);
-      setBusy(false);
-      if (!res.ok) setError(ERRORS[res.error] ?? res.error);
+      patch({ busy: false, error: res.ok ? null : (ERRORS[res.error] ?? res.error) });
+      if (res.ok) buzz(35);
     } else if (canBet) {
-      setBusy(true);
+      patch({ busy: true });
       const res = await commands.placeBet(amount, autoX100);
-      setBusy(false);
-      if (!res.ok) setError(ERRORS[res.error] ?? res.error);
+      patch({ busy: false, error: res.ok ? null : (ERRORS[res.error] ?? res.error) });
+      if (res.ok) buzz(15);
     }
   }
 
@@ -94,7 +209,7 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.code !== 'Space' || e.repeat) return;
       const t = e.target as HTMLElement;
-      if (t.closest('input, textarea, select, button, a, [role="dialog"]')) return;
+      if (t.closest('input, textarea, select, button, a, [role="dialog"], dialog')) return;
       e.preventDefault();
       void actRef.current();
     };
@@ -102,144 +217,52 @@ export function BetPanel({ onNeedAuth }: { onNeedAuth: () => void }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const button = (() => {
-    if (!user && platformMode) return { label: 'Sign in on the platform', sub: 'open Ronin Rush from your portal', tone: 'mist' as const, disabled: true };
-    if (!user) return { label: 'Play as guest', sub: 'or sign in', tone: 'kin' as const, disabled: false };
-    if (sessionExpired && !myBet?.autoX100)
-      return { label: 'Session expired', sub: 'waiting for the portal to renew it', tone: 'mist' as const, disabled: true };
-    if (canCashOut) return { label: 'Cash out', sub: null, tone: 'kin' as const, disabled: false, live: true };
-    if (myBet?.status === 'CASHED_OUT')
-      return { label: `Cashed out at ${mult(myBet.cashoutX100!)}`, sub: `${signedMoney(myBet.payout! - myBet.amount)} ${CURRENCY}`, tone: 'take' as const, disabled: true };
-    if (myBet?.status === 'LOST') return { label: 'Defeated', sub: `−${money(myBet.amount)} ${CURRENCY}`, tone: 'beni' as const, disabled: true };
-    if (myBet && phase === 'BETTING')
-      return { label: 'Bet placed', sub: myBet.autoX100 ? `auto cash-out at ${mult(myBet.autoX100)}` : 'cash out during the duel', tone: 'take' as const, disabled: true };
-    if (phase === 'BETTING') return { label: `Bet ${money(amount)}`, sub: autoX100 && autoValid ? `auto cash-out at ${mult(autoX100)}` : null, tone: 'kin' as const, disabled: !canBet };
-    return { label: 'Duel in progress', sub: 'bets open when it ends', tone: 'mist' as const, disabled: true };
+  type Tone = 'cash' | 'bet' | 'won' | 'lost' | 'wait';
+  const button = ((): { label: string; sub: string | null; tone: Tone; disabled: boolean; live?: boolean } => {
+    if (!user && platformMode) return { label: 'Sign in on the platform', sub: 'open Ronin Rush from your portal', tone: 'wait', disabled: true };
+    if (!user) return { label: 'Enter the dojo', sub: 'play as a guest or sign in', tone: 'bet', disabled: false };
+    if (sessionExpired && !myBet?.autoX100) return { label: 'Session expired', sub: 'waiting for the portal to renew it', tone: 'wait', disabled: true };
+    if (canCashOut) return { label: 'Cash out', sub: null, tone: 'cash', disabled: false, live: true };
+    if (myBet?.status === 'CASHED_OUT') return { label: `Cashed out at ${mult(myBet.cashoutX100!)}`, sub: `${signedMoney(myBet.payout! - myBet.amount)} ${CURRENCY}`, tone: 'won', disabled: true };
+    if (myBet?.status === 'LOST') return { label: 'Defeated', sub: `−${money(myBet.amount)} ${CURRENCY}`, tone: 'lost', disabled: true };
+    if (myBet && phase === 'BETTING') return { label: 'Bet placed', sub: myBet.autoX100 ? `auto cash-out at ${mult(myBet.autoX100)}` : 'cash out during the duel', tone: 'won', disabled: true };
+    if (resting && phase === 'BETTING') return { label: 'On a break', sub: `new bets are paused for ${duration(breakUntil - now)}`, tone: 'wait', disabled: true };
+    if (phase === 'BETTING') return { label: `Bet ${money(amount)}`, sub: autoX100 && autoValid ? `auto cash-out at ${mult(autoX100)}` : null, tone: 'bet', disabled: !canBet };
+    return { label: 'Duel in progress', sub: 'bets open when it ends', tone: 'wait', disabled: true };
   })();
 
-  const lockedInputs = !!myBet || phase === 'RUNNING';
-  const toneClass = {
-    kin: 'bg-kin text-ai-950 hover:bg-[#e2bf72] disabled:bg-kin/40 disabled:text-ai-950/60',
-    take: 'bg-take/15 text-take ring-1 ring-take/40',
-    beni: 'bg-beni/15 text-[#e07383] ring-1 ring-beni/40',
-    mist: 'bg-ai-700 text-mist',
-  }[button.tone];
-
   return (
-    <section aria-label="Bet" className="rounded-[var(--radius-panel)] bg-ai-800 p-4 sm:p-5">
-      {/* Three columns when there is room; with the players sidebar (lg) the button drops to its own row. */}
-      <div className="grid gap-4 md:grid-cols-[1fr_auto_minmax(220px,280px)] md:items-end lg:grid-cols-[1fr_auto] xl:grid-cols-[1fr_auto_minmax(220px,280px)]">
-        <div>
-          <label htmlFor="stake" className="text-sm text-mist">
-            Stake
-          </label>
-          <div className="mt-1.5 flex items-center gap-2">
-            <div className="relative flex-1">
-              <input
-                id="stake"
-                inputMode="decimal"
-                disabled={lockedInputs}
-                value={money(amount).replace(/,/g, '')}
-                onChange={(e) => {
-                  const v = Math.round(parseFloat(e.target.value || '0') * 100);
-                  if (Number.isFinite(v)) setAmount(Math.max(0, Math.min(GAME_DEFAULTS.maxBetCents, v)));
-                }}
-                className="tabular w-full rounded-lg bg-ai-950 py-2.5 pr-12 pl-3 text-lg text-washi ring-1 ring-ai-600 outline-none focus:ring-kin disabled:opacity-60"
-              />
-              <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-mist">{CURRENCY}</span>
-            </div>
-            <button type="button" disabled={lockedInputs} onClick={() => setAmount((a) => Math.max(GAME_DEFAULTS.minBetCents, Math.floor(a / 2)))} className="rounded-lg bg-ai-700 px-3 py-2.5 text-sm hover:bg-ai-600 disabled:opacity-40">
-              ½
-            </button>
-            <button type="button" disabled={lockedInputs} onClick={() => setAmount((a) => Math.min(GAME_DEFAULTS.maxBetCents, a * 2))} className="rounded-lg bg-ai-700 px-3 py-2.5 text-sm hover:bg-ai-600 disabled:opacity-40">
-              2×
-            </button>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="Add to stake">
-            {CHIPS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                disabled={lockedInputs}
-                onClick={() => setAmount((a) => Math.min(GAME_DEFAULTS.maxBetCents, a + c))}
-                className="tabular rounded-[var(--radius-chip)] border border-kin/35 px-3 py-1 text-sm text-kin hover:border-kin hover:bg-kin/10 disabled:opacity-40"
-              >
-                +{c / 100}
-              </button>
-            ))}
-            <button type="button" disabled={lockedInputs} onClick={() => setAmount(GAME_DEFAULTS.minBetCents)} className="rounded-[var(--radius-chip)] px-3 py-1 text-sm text-mist hover:text-washi disabled:opacity-40">
-              Reset
-            </button>
-          </div>
-        </div>
-
-        <div className="md:w-40">
-          <div className="flex items-center justify-between gap-2">
-            <label htmlFor="auto" className="text-sm text-mist">
-              Auto cash-out
-            </label>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoOn}
-              aria-label="Enable auto cash-out"
-              disabled={lockedInputs}
-              onClick={() => setAutoOn((v) => !v)}
-              className={`relative h-5 w-9 rounded-full transition-colors disabled:opacity-40 ${autoOn ? 'bg-kin' : 'bg-ai-600'}`}
-            >
-              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-washi transition-transform ${autoOn ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-            </button>
-          </div>
-          <div className="relative mt-1.5">
-            <input
-              id="auto"
-              inputMode="decimal"
-              disabled={!autoOn || lockedInputs}
-              value={autoText}
-              onChange={(e) => setAutoText(e.target.value.replace(/[^0-9.]/g, ''))}
-              onBlur={() => {
-                const v = parseFloat(autoText);
-                setAutoText(Number.isFinite(v) ? Math.max(1.01, v).toFixed(2) : '2.00');
-              }}
-              aria-invalid={!autoValid}
-              className="tabular w-full rounded-lg bg-ai-950 py-2.5 pr-8 pl-3 text-lg ring-1 ring-ai-600 outline-none focus:ring-kin disabled:opacity-40 aria-[invalid=true]:ring-beni"
-            />
-            <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-mist">×</span>
-          </div>
-          <p className="mt-2 text-xs leading-snug text-mist">The server cashes you out at exactly this multiplier.</p>
-        </div>
-
-        <div className="lg:col-span-2 xl:col-span-1">
-          <button
-            type="button"
-            onClick={() => void act()}
-            disabled={button.disabled || busy}
-            className={`flex min-h-[76px] w-full flex-col items-center justify-center rounded-xl px-4 py-3 text-center transition-colors ${toneClass}`}
-          >
-            <span className="font-display text-2xl font-extrabold">
-              {button.label}
-              {button.live && myBet ? (
-                <>
-                  {' '}
-                  <span ref={payoutRef} className="tabular">
-                    {money(myBet.amount)}
-                  </span>
-                </>
-              ) : null}
-            </span>
-            {button.sub ? <span className="mt-0.5 text-sm opacity-80">{button.sub}</span> : null}
-          </button>
-          {/* Kept in the layout (invisible) so the panel does not jump between phases. */}
-          <p className={`mt-2 hidden text-center text-xs text-mist sm:block ${button.disabled && !canCashOut ? 'invisible' : ''}`}>
-            Press <kbd className="rounded bg-ai-700 px-1.5 py-0.5 text-washi">Space</kbd> to {canCashOut ? 'cash out' : 'bet'}
-          </p>
-        </div>
-      </div>
+    <div className="max-md:sticky max-md:bottom-0 max-md:z-10 max-md:-mx-3 max-md:border-t-[6px] max-md:border-hinoki max-md:bg-ai-950 max-md:px-3 max-md:pt-3 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))] md:self-end">
       {error ? (
-        <p role="alert" className="mt-3 rounded-lg bg-beni/10 px-3 py-2 text-sm text-[#e8909c]">
+        <p role="alert" className="cut-sm mb-2 bg-beni/15 px-3 py-2 text-sm text-beni-soft">
           {error}
         </p>
       ) : null}
-    </section>
+      <button
+        type="button"
+        onClick={() => void act()}
+        disabled={button.disabled || busy}
+        data-tone={button.tone}
+        data-tier={tier}
+        className="act cut btn-flick flex w-full flex-col items-center justify-center px-4 py-3 text-center"
+      >
+        {button.live && myBet ? (
+          <>
+            <span className="font-display text-xl font-extrabold">Cash out</span>
+            <span className="tabular font-display text-3xl leading-none font-extrabold">
+              <span ref={payoutRef}>{money(myBet.amount)}</span> <span className="text-base">{CURRENCY}</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-display text-2xl leading-tight font-extrabold">{button.label}</span>
+            {button.sub ? <span className="mt-0.5 text-sm opacity-85">{button.sub}</span> : null}
+          </>
+        )}
+      </button>
+      <p className={`mt-2 hidden text-center text-xs text-washi/65 md:block ${button.disabled && !canCashOut ? 'invisible' : ''}`}>
+        Press <kbd className="bg-ai-700 px-1.5 py-0.5 text-washi">Space</kbd> to {canCashOut ? 'cash out' : 'bet'}
+      </p>
+    </div>
   );
 }
