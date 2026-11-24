@@ -98,7 +98,7 @@ export function VerifyClient() {
         </ol>
       </section>
 
-      <section aria-label="Verifier" className="rounded-[var(--radius-panel)] bg-ai-800 p-5 sm:p-6">
+      <section aria-label="Verifier" className="cut bg-ai-800 p-5 sm:p-6">
         <form
           className="grid gap-4"
           onSubmit={(e) => {
@@ -110,12 +110,12 @@ export function VerifyClient() {
           <Field label="Public salt" value={salt} onChange={setSalt} />
           <Field label="Chain commitment" value={commitment} onChange={setCommitment} mono />
           <Field label="Previous round's seed (optional)" value={previous} onChange={setPrevious} mono />
-          <button type="submit" disabled={checking} className="rounded-xl bg-kin py-3 font-display text-lg font-extrabold text-ai-950 hover:bg-[#e2bf72] disabled:opacity-60">
+          <button type="submit" disabled={checking} className="cut btn-flick bg-kin px-6 py-3.5 font-display text-lg font-extrabold text-sumi disabled:opacity-60">
             {checking ? 'Checking…' : 'Verify'}
           </button>
         </form>
         {error ? (
-          <p role="alert" className="mt-4 text-sm text-[#e8909c]">
+          <p role="alert" className="mt-4 text-sm text-beni-soft">
             {error}
           </p>
         ) : null}
@@ -130,13 +130,13 @@ export function VerifyClient() {
 function Field({ label, value, onChange, placeholder, mono }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean }) {
   return (
     <label className="grid gap-1.5 text-sm">
-      <span className="text-mist">{label}</span>
+      <span className="text-washi/70">{label}</span>
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className={`rounded-lg bg-ai-950 px-3 py-2 text-washi ring-1 ring-ai-600 outline-none focus:ring-kin ${mono ? 'tabular text-[13px] tracking-tight' : ''}`}
+        className={`h-11 bg-ai-950 px-3 text-washi shadow-[inset_0_-3px_0_var(--color-ai-600)] outline-none focus:shadow-[inset_0_-3px_0_var(--color-kin)] ${mono ? 'tabular text-[13px] tracking-tight' : ''}`}
       />
     </label>
   );
@@ -144,9 +144,9 @@ function Field({ label, value, onChange, placeholder, mono }: { label: string; v
 
 function ResultView({ r }: { r: Result }) {
   return (
-    <div className="mt-6 border-t border-ai-700 pt-5" aria-live="polite">
+    <div className="mt-6 border-t border-washi/20 pt-5" aria-live="polite">
       <div className="flex items-baseline justify-between">
-        <span className="text-mist">Crash point</span>
+        <span className="text-washi/70">Crash point</span>
         <Mult x100={r.crashX100} className="font-display text-4xl font-extrabold text-kin" />
       </div>
       <dl className="mt-4 grid gap-2 text-sm">
@@ -168,8 +168,8 @@ function ResultView({ r }: { r: Result }) {
 function Row({ k, v, ok }: { k: string; v: string; ok?: boolean }) {
   return (
     <div className="grid gap-0.5 sm:grid-cols-[180px_1fr] sm:gap-3">
-      <dt className="text-mist">{k}</dt>
-      <dd className={`tabular break-all ${ok === undefined ? 'text-washi' : ok ? 'text-take' : 'text-[#e8909c]'}`}>{v}</dd>
+      <dt className="text-washi/70">{k}</dt>
+      <dd className={`tabular break-all ${ok === undefined ? 'text-washi' : ok ? 'text-take' : 'text-beni-soft'}`}>{v}</dd>
     </div>
   );
 }
@@ -193,11 +193,11 @@ function RecentRounds({ rounds, salt, onPick }: { rounds: SettledRoundSummary[];
   return (
     <section aria-label="Recent rounds, verified in your browser" className="lg:col-span-2">
       <h2 className="font-display text-2xl font-semibold">Recent rounds</h2>
-      <p className="mt-1 text-sm text-mist">Recomputed here just now. Each seed hashes to the one before it.</p>
+      <p className="mt-1 text-sm text-washi/70">Recomputed here just now. Each seed hashes to the one before it.</p>
       <div className="mt-4 overflow-x-auto">
         <table className="w-full min-w-[560px] text-left text-sm">
-          <thead className="text-mist">
-            <tr className="border-b border-ai-700">
+          <thead className="text-washi/70">
+            <tr className="border-b border-washi/20">
               <th className="py-2 pr-4 font-normal">Round</th>
               <th className="py-2 pr-4 font-normal">Crash</th>
               <th className="py-2 pr-4 font-normal">Seed</th>
@@ -206,7 +206,7 @@ function RecentRounds({ rounds, salt, onPick }: { rounds: SettledRoundSummary[];
           </thead>
           <tbody>
             {checked.map((r) => (
-              <tr key={r.roundId} className="border-b border-ai-700/60">
+              <tr key={r.roundId} className="border-b border-washi/10">
                 <td className="tabular py-2 pr-4">#{r.roundId}</td>
                 <td className="py-2 pr-4">
                   <Mult x100={r.crashX100} />
@@ -216,7 +216,7 @@ function RecentRounds({ rounds, salt, onPick }: { rounds: SettledRoundSummary[];
                     {shortHash(r.seed, 16)}
                   </button>
                 </td>
-                <td className={`py-2 ${r.ok ? 'text-take' : 'text-[#e8909c]'}`}>{r.ok ? 'Matches' : 'Mismatch'}</td>
+                <td className={`py-2 ${r.ok ? 'text-take' : 'text-beni-soft'}`}>{r.ok ? 'Matches' : 'Mismatch'}</td>
               </tr>
             ))}
           </tbody>

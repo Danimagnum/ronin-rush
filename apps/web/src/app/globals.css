@@ -6,45 +6,67 @@
 @import '@fontsource/zen-kaku-gothic-new/latin-700.css';
 
 /*
-  Ronin Rush palette — a moonlit bamboo clearing, not a neon casino.
-  ai     indigo night (aizome dye)        base
-  yoru   deeper sky over the dojo         scene
-  washi  paper under moonlight            text
-  kin    gold leaf                        multiplier, cash-out, wins
-  take   bamboo                           a bet that is still in play
-  beni   crimson lacquer                  defeat, busted
+  Ronin Rush: the duel is a painted scroll, the controls are objects from the dojo.
+
+  ai      indigo night (aizome dye)       base, the sky the scene is painted on
+  sumi    ink                             deepest shadow, text on paper
+  hinoki  cypress wood                    scroll rods, frames, the floor under the controls
+  washi   paper                           text, the stake slip, the BET button
+  kin     gold leaf                       the multiplier, cash-out, koban coins, wins
+  take    bamboo                          a bet that is still in play
+  beni    crimson lacquer                 defeat, busted, the hanko stamp
+  plum    dusk violet                     only the rare 10x+ rounds
+
+  Shape language: one cut corner pair (top-left, bottom-right), like a katana tip. Round things
+  are coins and the sun. Nothing else is rounded.
 */
 @theme {
-  --color-ai-950: #0d1322;
-  --color-ai-900: #131a2c;
-  --color-ai-800: #1a2338;
-  --color-ai-700: #243049;
-  --color-ai-600: #334162;
-  --color-mist: #8b94aa;
-  --color-washi: #e8e2d2;
-  --color-kin: #d6af5c;
+  --color-ai-950: #0a0f1b;
+  --color-ai-900: #101728;
+  --color-ai-800: #172034;
+  --color-ai-700: #222e48;
+  --color-ai-600: #33425f;
+  --color-sumi: #05070d;
+  --color-hinoki: #2a2018;
+  --color-hinoki-hi: #4b3a2a;
+  --color-mist: #98a1b5;
+  --color-washi: #ebe4d0;
+  --color-washi-dim: #cfc7b1;
+  --color-kin: #e0b44f;
   --color-kin-deep: #a9843a;
-  --color-take: #7ea37c;
-  --color-beni: #b4394a;
+  --color-take: #86ad83;
+  --color-beni: #c23a4e;
+  --color-beni-soft: #ef8c99;
   --color-plum: #b48ac9;
 
   --font-display: 'Shippori Mincho B1', 'Hiragino Mincho ProN', Georgia, serif;
   --font-sans: 'Zen Kaku Gothic New', system-ui, sans-serif;
-
-  --radius-chip: 999px;
-  --radius-panel: 14px;
 }
 
 :root {
   color-scheme: dark;
+  --cut: 10px;
+  --ease-snap: cubic-bezier(0.2, 0.9, 0.25, 1.15);
 }
 
 html,
 body {
-  background: var(--color-ai-900);
+  background: var(--color-ai-950);
   color: var(--color-washi);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* A tap on the big button must never zoom the page or select text. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgb(224 180 79 / 0.25);
+}
+html {
+  /* The action dock is stuck to the bottom on phones: focused fields must not end up under it. */
+  scroll-padding-bottom: 8rem;
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 /* Figures that change while you watch them must not jiggle. */
@@ -56,44 +78,98 @@ body {
   outline: 2px solid var(--color-kin);
   outline-offset: 2px;
 }
+/* Cut-corner shapes clip anything outside them, so their focus ring is drawn inside. */
+.cut:focus-visible,
+.cut-sm:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 3px var(--color-kin);
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 
-/*
-  The one bold element: the multiplier, set in a woodblock-style mincho and gilded once the
-  duel heats up. Everything else on the page stays quiet so this can carry the drama.
-*/
+/* ── shape ─────────────────────────────────────────────────────────────── */
+
+.cut {
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+.cut-sm {
+  --cut: 6px;
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+
+/* ── the scroll: the duel is painted on it ─────────────────────────────── */
+
+.scroll {
+  position: relative;
+  padding-block: 12px;
+}
+.scroll::before,
+.scroll::after {
+  content: '';
+  position: absolute;
+  inset-inline: -6px;
+  height: 12px;
+  background: var(--color-hinoki);
+  box-shadow: inset 0 2px 0 var(--color-hinoki-hi), inset 0 -2px 0 var(--color-sumi);
+  z-index: 2;
+}
+.scroll::before {
+  top: 0;
+}
+.scroll::after {
+  bottom: 0;
+}
+.scroll-cap {
+  position: absolute;
+  z-index: 3;
+  width: 10px;
+  height: 18px;
+  background: var(--color-kin-deep);
+  box-shadow: inset 0 2px 0 var(--color-kin);
+}
+.scroll-surface {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-ai-950);
+}
+
+/* ── the multiplier: the one big thing ─────────────────────────────────── */
+
 .stage-multiplier {
   color: var(--color-washi);
-  text-shadow: 0 2px 24px rgb(13 19 34 / 0.85);
+  text-shadow: 0 2px 24px rgb(5 7 13 / 0.9);
   letter-spacing: -0.01em;
 }
 .stage-multiplier[data-state='betting'] {
   color: var(--color-washi);
-  opacity: 0.92;
+  opacity: 0.94;
 }
-.stage-multiplier[data-state='enraged'],
-.stage-multiplier[data-state='frenzy'] {
-  background: linear-gradient(180deg, #f6dd9b 0%, var(--color-kin) 48%, var(--color-kin-deep) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  text-shadow: none;
-  filter: drop-shadow(0 2px 18px rgb(13 19 34 / 0.9));
+/* Woodblock misregistration: a second ink pass slightly off the first. It widens with the rage. */
+.stage-multiplier[data-state='enraged'] {
+  color: var(--color-kin);
+  text-shadow: 3px 3px 0 var(--color-beni), 0 2px 26px rgb(5 7 13 / 0.9);
 }
 .stage-multiplier[data-state='frenzy'] {
-  filter: drop-shadow(0 0 22px rgb(214 175 92 / 0.55)) drop-shadow(0 2px 18px rgb(13 19 34 / 0.9));
+  color: #f3cd72;
+  text-shadow: 5px 5px 0 var(--color-beni), 0 0 28px rgb(224 180 79 / 0.5), 0 2px 22px rgb(5 7 13 / 0.9);
+  animation: ember 0.9s steps(2, end) infinite;
 }
 .stage-multiplier[data-state='defeated'] {
   color: var(--color-beni);
-  text-shadow: 0 2px 24px rgb(13 19 34 / 0.9);
+  text-shadow: 0 2px 24px rgb(5 7 13 / 0.95);
+}
+@keyframes ember {
+  50% {
+    text-shadow: 6px 4px 0 var(--color-beni), 0 0 34px rgb(224 180 79 / 0.62), 0 2px 22px rgb(5 7 13 / 0.9);
+  }
 }
 
 .x-sign {
@@ -107,4 +183,275 @@ body {
   margin-left: 0.04em;
   margin-right: 0.04em;
   vertical-align: 0.12em;
+}
+
+/* ── incense: the betting window burns down ────────────────────────────── */
+
+.incense {
+  position: relative;
+  height: 14px;
+  width: min(220px, 56vw);
+}
+.incense-stick {
+  position: absolute;
+  inset: 5px 0;
+  background: #7b5a3c;
+  transform-origin: right center;
+  box-shadow: 0 1px 0 var(--color-sumi);
+}
+.incense-ember {
+  position: absolute;
+  inset: 0;
+}
+.incense-ember::after {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 2px;
+  width: 10px;
+  height: 10px;
+  background: #ffb347;
+  border-radius: 50%;
+  box-shadow: 0 0 10px 3px rgb(255 140 50 / 0.75);
+}
+.incense[data-low='true'] .incense-ember::after {
+  background: #ff6b4a;
+  animation: ember-pulse 0.4s steps(2, end) infinite;
+}
+@keyframes ember-pulse {
+  50% {
+    box-shadow: 0 0 14px 6px rgb(255 90 50 / 0.9);
+  }
+}
+
+/* ── hanko: stamped results ────────────────────────────────────────────── */
+
+.hanko {
+  display: inline-block;
+  padding: 0.12em 0.5em 0.18em;
+  border: 4px solid currentColor;
+  font-family: var(--font-display);
+  font-weight: 800;
+  line-height: 1;
+  transform: rotate(-5deg);
+  animation: stamp 420ms var(--ease-snap) both;
+  background: rgb(5 7 13 / 0.35);
+}
+.hanko[data-rough='true'] {
+  filter: url(#ink-rough);
+}
+@keyframes stamp {
+  0% {
+    transform: rotate(-9deg) scale(1.9);
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(-5deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.slip-in {
+  animation: slip-in 360ms var(--ease-snap) both;
+}
+@keyframes slip-in {
+  from {
+    transform: translateY(14px) rotate(1.5deg);
+    opacity: 0;
+  }
+}
+
+/* ── controls ──────────────────────────────────────────────────────────── */
+
+/* Gold koban coin that adds to the stake. */
+.koban {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 60px;
+  height: 44px;
+  padding-inline: 12px;
+  border-radius: 50% / 50%;
+  background: var(--color-kin);
+  color: var(--color-sumi);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.05rem;
+  box-shadow: inset 0 0 0 3px var(--color-kin-deep), inset 0 0 0 5px rgb(255 235 170 / 0.55), 0 3px 0 #6d5420;
+  transition: transform 90ms ease-out, box-shadow 90ms ease-out;
+}
+.koban:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.koban:active:not(:disabled) {
+  transform: translateY(3px);
+  box-shadow: inset 0 0 0 3px var(--color-kin-deep), inset 0 0 0 5px rgb(255 235 170 / 0.55), 0 0 0 #6d5420;
+}
+.koban:disabled {
+  background: #4a4638;
+  color: #8a8472;
+  box-shadow: inset 0 0 0 3px #3a372b, 0 3px 0 #26241c;
+}
+.koban:focus-visible {
+  outline: 3px solid var(--color-washi);
+  outline-offset: 3px;
+}
+
+/* The stake is written on a strip of washi in ink. */
+.slip {
+  background: var(--color-washi);
+  color: var(--color-sumi);
+  box-shadow: inset 0 -3px 0 rgb(0 0 0 / 0.14);
+}
+.slip:disabled,
+.slip[aria-disabled='true'] {
+  background: #7e7967;
+  color: #26241c;
+}
+.slip:focus-within {
+  box-shadow: inset 0 0 0 3px var(--color-kin);
+}
+
+.btn-flick {
+  transition: transform 80ms ease-out;
+}
+.btn-flick:active:not(:disabled) {
+  transform: translateY(2px) scale(0.985);
+}
+
+/* The action: gold and urgent while a cash-out is possible, quiet paper while betting. */
+.act {
+  position: relative;
+  min-height: 78px;
+}
+.act[data-tone='cash'] {
+  background: var(--color-kin);
+  color: var(--color-sumi);
+  box-shadow: inset 0 -5px 0 var(--color-kin-deep);
+  animation: cash-beat 1.1s ease-in-out infinite;
+}
+.act[data-tone='cash'][data-tier='1'] {
+  animation-duration: 0.7s;
+}
+.act[data-tone='cash'][data-tier='2'] {
+  animation-duration: 0.42s;
+}
+/* Only brightness and an inner ring pulse: the button's box never moves, so it stays easy to hit. */
+@keyframes cash-beat {
+  50% {
+    filter: brightness(1.14);
+  }
+}
+.act[data-tone='cash']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 4px var(--color-washi);
+  opacity: 0;
+  animation: cash-ring 1.1s ease-in-out infinite;
+  animation-duration: inherit;
+  pointer-events: none;
+}
+@keyframes cash-ring {
+  50% {
+    opacity: 0.85;
+  }
+}
+.act[data-tone='bet'] {
+  background: var(--color-washi);
+  color: var(--color-sumi);
+  box-shadow: inset 0 -5px 0 rgb(0 0 0 / 0.16);
+}
+.act[data-tone='won'] {
+  background: rgb(134 173 131 / 0.18);
+  color: var(--color-take);
+  box-shadow: inset 0 0 0 2px rgb(134 173 131 / 0.55);
+}
+.act[data-tone='lost'] {
+  background: rgb(194 58 78 / 0.16);
+  color: var(--color-beni-soft);
+  box-shadow: inset 0 0 0 2px rgb(194 58 78 / 0.55);
+}
+.act[data-tone='wait'] {
+  background: var(--color-ai-700);
+  color: var(--color-mist);
+}
+.act:disabled {
+  cursor: not-allowed;
+}
+.act[data-tone='bet']:disabled {
+  background: #8f8a77;
+  color: #2b281f;
+}
+
+/* ── the roll of names ─────────────────────────────────────────────────── */
+
+.roll-row {
+  position: relative;
+}
+/* A cut through the name: gold if the player got out, crimson if they did not. */
+.roll-row[data-status='CASHED_OUT']::after,
+.roll-row[data-status='LOST']::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  transform-origin: left center;
+  animation: cut-through 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  pointer-events: none;
+}
+.roll-row[data-status='CASHED_OUT']::after {
+  background: var(--color-kin);
+  opacity: 0.55;
+  top: auto;
+  bottom: 0;
+}
+.roll-row[data-status='LOST']::after {
+  background: var(--color-beni);
+  opacity: 0.8;
+  transform: rotate(-1.2deg);
+}
+@keyframes cut-through {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* ── history: the length of a cut is the multiplier ────────────────────── */
+
+.tally {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 28px;
+}
+.tally-cut {
+  display: block;
+  width: 9px;
+  min-height: 6px;
+  transform-origin: bottom;
+  transform: skewX(-12deg);
+}
+@keyframes cut-in {
+  from {
+    transform: skewX(-12deg) scaleY(0);
+  }
+}
+.tally-cut:first-child {
+  animation: cut-in 300ms var(--ease-snap) both;
+}
+
+/* A bamboo-node divider that carries meaning: it separates the stage from the controls. */
+.floor {
+  background: var(--color-hinoki);
+  box-shadow: inset 0 3px 0 var(--color-hinoki-hi), inset 0 -3px 0 var(--color-sumi);
+}
+
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }

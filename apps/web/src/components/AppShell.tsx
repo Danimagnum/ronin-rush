@@ -2,6 +2,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AuthDialog } from './AuthDialog';
 import { Header } from './Header';
+import { InkFilters } from './icons';
+import { MenuSheet } from './MenuSheet';
 import { ResponsibleGaming } from './ResponsibleGaming';
 import { DuelAudio } from '@/game/audio';
 import { api, type AuthResponse } from '@/lib/api';
@@ -21,13 +23,19 @@ export const useShell = () => useContext(ShellContext)!;
 /** Restores the session, owns the socket for the whole app, and hosts the auth dialog. */
 export function AppShell({ children }: { children: ReactNode }) {
   const [authOpen, setAuthOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const audio = useMemo(() => (typeof window === 'undefined' ? (null as unknown as DuelAudio) : new DuelAudio()), []);
   const setAuth = useGame((s) => s.setAuth);
   const sound = useGame((s) => s.sound);
   const set = useGame((s) => s.set);
 
   useEffect(() => {
-    set({ sound: loadPref('sound', false), sessionStartedAt: loadPref('sessionStartedAt', Date.now()) });
+    set({
+      sound: loadPref('sound', false),
+      effects: loadPref<'auto' | 'low'>('effects', 'auto'),
+      breakUntil: loadPref('breakUntil', 0),
+      sessionStartedAt: loadPref('sessionStartedAt', Date.now()),
+    });
     const platformToken = takePlatformToken();
     const s = platformToken ? { token: platformToken, username: '' } : loadSession();
     if (!s) {
@@ -105,20 +113,25 @@ export function AppShell({ children }: { children: ReactNode }) {
     connect(r.token);
   };
 
+  const signOut = () => {
+    saveSession(null);
+    setAuth(null, null);
+    connect(null);
+    setMenuOpen(false);
+  };
+
   return (
     <ShellContext.Provider value={{ audio, requestAuth: () => setAuthOpen(true) }}>
+      <InkFilters />
+      <a href="#main" className="cut-sm fixed top-2 left-2 z-50 -translate-y-20 bg-kin px-4 py-2 font-bold text-sumi focus:translate-y-0">
+        Skip to the game
+      </a>
       <div className="flex min-h-dvh flex-col">
-        <Header
-          onSignIn={() => setAuthOpen(true)}
-          onSignOut={() => {
-            saveSession(null);
-            setAuth(null, null);
-            connect(null);
-          }}
-        />
-        <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-4 sm:px-6 sm:py-6">{children}</main>
+        <Header onSignIn={() => setAuthOpen(true)} onMenu={() => setMenuOpen(true)} />
+        <main id="main" className="mx-auto w-full max-w-[1400px] flex-1 px-3 py-4 sm:px-6 sm:py-6">{children}</main>
         <ResponsibleGaming />
       </div>
+      <MenuSheet open={menuOpen} onClose={() => setMenuOpen(false)} onSignIn={() => { setMenuOpen(false); setAuthOpen(true); }} onSignOut={signOut} />
       <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} onAuthed={onAuthed} />
     </ShellContext.Provider>
   );
